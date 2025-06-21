@@ -1,7 +1,8 @@
 "use client"
 
 import Link from "next/link"
-import React, { useState } from "react"
+import type React from "react"
+import { useState } from "react"
 import {
   Camera,
   FileImage,
@@ -15,10 +16,50 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { useRouter } from "next/navigation"
 
 export default function HomePage() {
   const [showPopup, setShowPopup] = useState(false)
   const [model, setModel] = useState("Gemini")
+  const [input, setInput] = useState("")
+  const [isLoading, setIsLoading] = useState(false)
+  const router = useRouter()
+
+  const handleSubmit = async () => {
+    if (!input.trim()) return
+
+    setIsLoading(true)
+
+    try {
+      // Make request to /chat API
+      const response = await fetch("/api/template", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          template: input,
+          model: model,
+        }),
+      })
+
+      const data = await response.json()
+
+      if (data.result) {
+        // Generate a unique chat ID
+        const chatId = Date.now().toString()
+
+        console.log("data", data);
+        
+        // Navigate to the chat interface with the ID
+        router.push(`/chat/${chatId}?prompt=${encodeURIComponent(input)}`)
+      }
+    } catch (error) {
+      console.error("Error creating chat:", error)
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   return (
     <div className="min-h-screen bg-[#0e0e0e] text-white">
@@ -28,10 +69,7 @@ export default function HomePage() {
           <div className="flex items-center space-x-2 text-sm">
             <Badge className="bg-green-900 text-green-200 border border-green-800">New</Badge>
             <span className="text-gray-400">The weBuild is now in beta.</span>
-            <Link
-              href="#"
-              className="text-blue-400 hover:text-blue-300 flex items-center"
-            >
+            <Link href="#" className="text-blue-400 hover:text-blue-300 flex items-center">
               Learn More
               <ChevronRight className="w-3 h-3 ml-1" />
             </Link>
@@ -51,16 +89,32 @@ export default function HomePage() {
                 <textarea
                   rows={2}
                   placeholder="Hey, Let's Start Building Together!"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
                   className="w-full max-h-60 overflow-y-auto resize-none bg-[#1a1a1a] text-white text-base placeholder:text-gray-500 p-4 rounded-md border border-gray-700 focus:outline-none focus:border-gray-500 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault()
+                      handleSubmit()
+                    }
+                  }}
                 />
-
               </div>
               <div className="flex items-center space-x-2 ml-4 mt-2">
                 <Button variant="ghost" size="sm" className="text-gray-400 hover:text-white">
                   <Paperclip className="w-4 h-4" />
                 </Button>
-                <Button size="sm" className="bg-white text-black hover:bg-gray-200">
-                  <ArrowUp className="w-4 h-4" />
+                <Button
+                  size="sm"
+                  className="bg-white text-black hover:bg-gray-200"
+                  onClick={handleSubmit}
+                  disabled={isLoading || !input.trim()}
+                >
+                  {isLoading ? (
+                    <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <ArrowUp className="w-4 h-4" />
+                  )}
                 </Button>
               </div>
             </div>
@@ -84,30 +138,18 @@ export default function HomePage() {
                     >
                       Gemini
                     </button>
-                    <button
-                      className="text-gray-500 text-left px-4 py-2 cursor-not-allowed"
-                      disabled
-                    >
+                    <button className="text-gray-500 text-left px-4 py-2 cursor-not-allowed" disabled>
                       Claude (coming)
                     </button>
-                    <button
-                      className="text-gray-500 text-left px-4 py-2 cursor-not-allowed"
-                      disabled
-                    >
+                    <button className="text-gray-500 text-left px-4 py-2 cursor-not-allowed" disabled>
                       Mistral (coming)
                     </button>
                   </div>
                 </div>
-
-                {/* <Button variant="outline" size="sm" className="text-gray-400 border-gray-600 hover:text-white">
-                  v0-1.5-md
-                  <ChevronDown className="w-3 h-3 ml-1" />
-                </Button> */}
               </div>
             </div>
           </div>
         </div>
-
 
         {/* Upcoming Features Popup */}
         <div className="text-center mb-10">
@@ -152,10 +194,7 @@ export default function HomePage() {
 
 function FeatureButton({ icon: Icon, label }: { icon: React.ElementType; label: string }) {
   return (
-    <Button
-      variant="ghost"
-      className="w-full justify-start text-gray-300 hover:text-white hover:bg-[#2a2a2a]"
-    >
+    <Button variant="ghost" className="w-full justify-start text-gray-300 hover:text-white hover:bg-[#2a2a2a]">
       <Icon className="w-4 h-4 mr-2" />
       {label}
     </Button>

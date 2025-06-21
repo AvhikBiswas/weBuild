@@ -140,6 +140,7 @@ Provide complete working application
 
 Always aim to exceed user expectations by building polished, production-ready applications with modern best practices.
 
+For images always use real images from unsplash.com
 
 Your Default Template Files
 You already have these essential files pre-configured in your system:

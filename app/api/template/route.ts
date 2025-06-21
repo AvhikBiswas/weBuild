@@ -1,52 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { formatLLMJsonResponse } from "@/lib/formatLLMJsonResponse";
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY!;
 
 const model = new ChatGoogleGenerativeAI({
-    model: "gemini-1.5-flash", // Gemini small/fast model
-    apiKey: GOOGLE_API_KEY,
-    temperature: 0,
-    maxOutputTokens: 10,
+  model: "gemini-1.5-flash",
+  apiKey: GOOGLE_API_KEY,
+  temperature: 0,
+  maxOutputTokens: 100,
 });
 
 export async function POST(req: NextRequest) {
-    try {
-        const { template } = await req.json();
+  try {
+    const { template } = await req.json();
 
-        if (!template) {
-            return NextResponse.json({ error: "Template is required" }, { status: 400 });
-        }
+    if (!template) {
+      return NextResponse.json({ error: "Template is required" }, { status: 400 });
+    }
 
-        const systemPrompt = `
-You are a web development expert. Your task is to determine whether the user wants to build a web app that can be built using Next.js. You can only respond with one of two outputs: **"next js"** or **"error"**.
+    const systemPrompt = `You are a web development expert. Your task is to determine whether the user wants to build a web app that can be built using Next.js. You must output a JSON object with two keys: appType and title.
 
 Rules:
-- If the user mentions building a web app with React, Next.js, Angular, Vue, or Svelte — respond with "next js".
-- If the user talks about mobile apps, Flutter, or anything unrelated to web development — respond with "error".
-- Only reply with "next js" or "error". No other words or explanation.
+- If the user mentions building a web app with React, Next.js, Angular, Vue, or Svelte — appType should be "next js".
+- If the user talks about mobile apps, Flutter, or anything unrelated to web development — respond with appType as "error".
+- Try to extract a concise title from the user's message. For example, "Build a to-do app" becomes "To-Do App".
+- Respond strictly in this JSON format: { "appType": "next js" | "error", "title": "Extracted Title Here" }
 
-Examples:
-User: I want to build a web app with next js  
-You: next js  
-User: I want to build a web app with flutter  
-You: error  
-User: Build a to-do app  
-You: next js  
+Input: ${template}`;
 
-Input:
-${template}
-    `.trim();
-
-        const result = await model.invoke(systemPrompt);        
-        const data = result.content.toString().toLowerCase().trim();
-
-        return NextResponse.json(
-            { result: data }
-        );
-    } catch (error: unknown) {
-        console.error("LLM Error:", error);
-        const message = error instanceof Error ? error.message : "Internal Server Error";
-        return NextResponse.json({ error: message }, { status: 500 });
-    }
+    const result = await model.invoke(systemPrompt);
+    const data = formatLLMJsonResponse(result.content);
+    return NextResponse.json({ result: data }, { status: 200 });
+  } catch (error: unknown) {
+    console.error("LLM Error:", error);
+    const message = error instanceof Error ? error.message : "Internal Server Error";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 }

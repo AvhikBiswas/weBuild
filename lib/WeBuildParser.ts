@@ -1,5 +1,3 @@
-import { WebContainer, FileSystemTree } from '@webcontainer/api';
-
 // Enums for better type safety
 export enum WeBuildActionType {
   CREATE = 'create',
@@ -8,134 +6,75 @@ export enum WeBuildActionType {
   TERMINAL = 'terminal'
 }
 
-// Core interfaces
-export interface WeBuildAction {
-  readonly action: WeBuildActionType;
-  readonly fileName?: string;
-  readonly command?: string;
-  readonly content?: string;
-}
-
-export interface ParsedWeBuildFile {
+// Interfaces for structure parsing
+export interface WeBuildFileStructure {
   readonly fileName: string;
-  readonly content: string;
+  readonly action: WeBuildActionType;
+  readonly hasContent: boolean;
+  readonly contentSize: number;
 }
 
-export interface ParsedWeBuildCommand {
+export interface WeBuildCommandStructure {
   readonly command: string;
+  readonly action: WeBuildActionType;
 }
 
-export interface WeBuildParseResult {
-  readonly files: readonly ParsedWeBuildFile[];
-  readonly commands: readonly ParsedWeBuildCommand[];
+export interface WeBuildStructureResult {
+  readonly files: readonly WeBuildFileStructure[];
+  readonly commands: readonly WeBuildCommandStructure[];
+  readonly totalBlocks: number;
+  readonly fileTree: readonly string[];
 }
 
-// File system types
-export interface FileNode {
-  readonly file: {
-    readonly contents: string;
-  };
-}
-
-export interface DirectoryNode {
-  readonly directory: Record<string, FileNode | DirectoryNode>;
-}
-
-export type FileSystemNode = FileNode | DirectoryNode;
-
-// Configuration interfaces
-export interface ParserOptions {
-  readonly validateContent?: boolean;
-  readonly maxFileSize?: number;
-  readonly allowedExtensions?: readonly string[];
-}
-
-export interface ExecutionOptions {
-  readonly timeout?: number;
-  readonly workingDirectory?: string;
-  readonly env?: Record<string, string>;
+export interface DirectoryStructure {
+  readonly [key: string]: DirectoryStructure | string;
 }
 
 // Error types
-export class WeBuildParseError extends Error {
+export class WeBuildStructureError extends Error {
   constructor(
     message: string,
-    public readonly fileName?: string,
-    public readonly lineNumber?: number
+    public readonly blockIndex?: number
   ) {
     super(message);
-    this.name = 'WeBuildParseError';
+    this.name = 'WeBuildStructureError';
   }
 }
 
-export class WebContainerError extends Error {
-  constructor(
-    message: string,
-    public readonly operation: string,
-    public readonly fileName?: string
-  ) {
-    super(message);
-    this.name = 'WebContainerError';
-  }
-}
-
-// SINGLETON IMPLEMENTATION
-export class WeBuildParser {
-  private static instance: WeBuildParser | null = null;
-  private webContainer: WebContainer | null = null;
-  private readonly options: Required<ParserOptions>;
+// Main structure parser class (Singleton)
+export class WeBuildStructureParser {
+  private static instance: WeBuildStructureParser | null = null;
 
   // Private constructor prevents direct instantiation
-  private constructor(options: ParserOptions = {}) {
-    this.options = {
-      validateContent: true,
-      maxFileSize: 1024 * 1024, // 1MB
-      allowedExtensions: ['.js', '.ts', '.tsx', '.jsx', '.json', '.css', '.html', '.md', '.txt'],
-      ...options
-    };
-  }
+  private constructor() {}
 
   /**
-   * Get the singleton instance of WeBuildParser
+   * Get the singleton instance of WeBuildStructureParser
    */
-  public static getInstance(options?: ParserOptions): WeBuildParser {
-    if (!WeBuildParser.instance) {
-      WeBuildParser.instance = new WeBuildParser(options);
+  public static getInstance(): WeBuildStructureParser {
+    if (!WeBuildStructureParser.instance) {
+      WeBuildStructureParser.instance = new WeBuildStructureParser();
     }
-    return WeBuildParser.instance;
+    return WeBuildStructureParser.instance;
   }
 
   /**
    * Reset the singleton instance (useful for testing)
    */
   public static resetInstance(): void {
-    WeBuildParser.instance = null;
+    WeBuildStructureParser.instance = null;
   }
 
   /**
-   * Set the WebContainer instance for the singleton
+   * Parse weBuild format string and extract only structure information
    */
-  public setWebContainer(webContainer: WebContainer): void {
-    this.webContainer = webContainer;
-  }
-
-  /**
-   * Check if WebContainer is available
-   */
-  public hasWebContainer(): boolean {
-    return this.webContainer !== null;
-  }
-
-  /**
-   * Parse weBuild format string and extract files and commands
-   */
-  public parseWeBuildFormat(weBuildString: string): WeBuildParseResult {
+  public parseStructure(weBuildString: string): WeBuildStructureResult {
     if (!weBuildString || typeof weBuildString !== 'string') {
-      throw new WeBuildParseError('Invalid weBuild string provided');
+      throw new WeBuildStructureError('Invalid weBuild string provided');
     }
 
-    const files: ParsedWeBuildFile[] = [];
-    const commands: ParsedWeBuildCommand[] = [];
+    const files: WeBuildFileStructure[] = [];
+    const commands: WeBuildCommandStructure[] = [];
 
     // Regular expression to match weBuild blocks
     const weBuildRegex = /<weBuild\s+([^>]+)>([\s\S]*?)<\/weBuild>/g;
@@ -151,7 +90,7 @@ export class WeBuildParser {
         const action = this.extractAttribute(attributes, 'action');
         
         if (!action || !Object.values(WeBuildActionType).includes(action as WeBuildActionType)) {
-          throw new WeBuildParseError(`Invalid action: ${action}`, undefined, blockIndex);
+          throw new WeBuildStructureError(`Invalid action: ${action}`, blockIndex);
         }
 
         const actionType = action as WeBuildActionType;
@@ -159,38 +98,185 @@ export class WeBuildParser {
         if (actionType === WeBuildActionType.CREATE || actionType === WeBuildActionType.UPDATE) {
           const fileName = this.extractAttribute(attributes, 'fileName');
           if (!fileName) {
-            throw new WeBuildParseError('fileName is required for create/update actions', undefined, blockIndex);
+            throw new WeBuildStructureError('fileName is required for create/update actions', blockIndex);
           }
-
-          if (!content) {
-            throw new WeBuildParseError('Content is required for create/update actions', fileName, blockIndex);
-          }
-
-          this.validateFile(fileName, content);
 
           files.push({
             fileName,
-            content: this.cleanContent(content)
+            action: actionType,
+            hasContent: content.length > 0,
+            contentSize: content.length
           });
         } else if (actionType === WeBuildActionType.TERMINAL) {
           const command = this.extractAttribute(attributes, 'command');
           if (!command) {
-            throw new WeBuildParseError('command is required for terminal actions', undefined, blockIndex);
+            throw new WeBuildStructureError('command is required for terminal actions', blockIndex);
           }
 
-          commands.push({ command: command.trim() });
+          commands.push({ 
+            command: command.trim(),
+            action: actionType
+          });
         }
 
         blockIndex++;
       } catch (error) {
-        if (error instanceof WeBuildParseError) {
+        if (error instanceof WeBuildStructureError) {
           throw error;
         }
-        throw new WeBuildParseError(`Error parsing block ${blockIndex}: ${error}`, undefined, blockIndex);
+        throw new WeBuildStructureError(`Error parsing block ${blockIndex}: ${error}`, blockIndex);
       }
     }
 
-    return { files: Object.freeze(files), commands: Object.freeze(commands) };
+    const fileTree = this.buildFileTree(files.map(f => f.fileName));
+
+    return {
+      files: Object.freeze(files),
+      commands: Object.freeze(commands),
+      totalBlocks: blockIndex,
+      fileTree: Object.freeze(fileTree)
+    };
+  }
+
+  /**
+   * Generate structural weBuild format with filenames only (no content)
+   */
+  public generateStructureFormat(weBuildString: string): string {
+    const { files, commands } = this.parseStructure(weBuildString);
+    
+    let result = '';
+
+    // Add file structures
+    files.forEach(file => {
+      result += `<weBuild action="${file.action}" fileName="${file.fileName}">\n`;
+      result += `// Content skipped (${file.contentSize} characters)\n`;
+      result += `</weBuild>\n\n`;
+    });
+
+    // Add command structures
+    commands.forEach(cmd => {
+      result += `<weBuild action="${cmd.action}" command="${cmd.command}">\n`;
+      result += `</weBuild>\n\n`;
+    });
+
+    return result.trim();
+  }
+
+  /**
+   * Get only filenames as an array
+   */
+  public getFileNames(weBuildString: string): readonly string[] {
+    const { files } = this.parseStructure(weBuildString);
+    return Object.freeze(files.map(f => f.fileName));
+  }
+
+  /**
+   * Get only commands as an array
+   */
+  public getCommands(weBuildString: string): readonly string[] {
+    const { commands } = this.parseStructure(weBuildString);
+    return Object.freeze(commands.map(c => c.command));
+  }
+
+  /**
+   * Get hierarchical directory structure
+   */
+  public getDirectoryStructure(weBuildString: string): DirectoryStructure {
+    const fileNames = this.getFileNames(weBuildString);
+    return this.buildDirectoryStructure(fileNames);
+  }
+
+  /**
+   * Get flat file tree representation
+   */
+  public getFileTree(weBuildString: string): readonly string[] {
+    const fileNames = this.getFileNames(weBuildString);
+    return this.buildFileTree(fileNames);
+  }
+
+  /**
+   * Get statistics about the structure
+   */
+  public getStructureStats(weBuildString: string): {
+    readonly totalFiles: number;
+    readonly totalCommands: number;
+    readonly totalBlocks: number;
+    readonly filesByExtension: Readonly<Record<string, number>>;
+    readonly actionsByType: Readonly<Record<WeBuildActionType, number>>;
+    readonly directories: readonly string[];
+    readonly maxDepth: number;
+  } {
+    const { files, commands, totalBlocks } = this.parseStructure(weBuildString);
+    
+    const filesByExtension: Record<string, number> = {};
+    const actionsByType: Record<WeBuildActionType, number> = {
+        [WeBuildActionType.CREATE]: 0,
+        [WeBuildActionType.UPDATE]: 0,
+        [WeBuildActionType.DELETE]: 0,
+        [WeBuildActionType.TERMINAL]: 0
+    };
+    const directories = new Set<string>();
+    let maxDepth = 0;
+
+    files.forEach(file => {
+      // Count by extension
+      const extension = file.fileName.substring(file.fileName.lastIndexOf('.')) || 'no-extension';
+      filesByExtension[extension] = (filesByExtension[extension] || 0) + 1;
+      
+      // Count by action type
+      actionsByType[file.action] = (actionsByType[file.action] || 0) + 1;
+      
+      // Extract directories and calculate depth
+      const parts = file.fileName.split('/');
+      maxDepth = Math.max(maxDepth, parts.length);
+      
+      for (let i = 1; i < parts.length; i++) {
+        directories.add(parts.slice(0, i).join('/'));
+      }
+    });
+
+    commands.forEach(cmd => {
+      actionsByType[cmd.action] = (actionsByType[cmd.action] || 0) + 1;
+    });
+
+    return {
+      totalFiles: files.length,
+      totalCommands: commands.length,
+      totalBlocks,
+      filesByExtension: Object.freeze(filesByExtension),
+      actionsByType: Object.freeze(actionsByType),
+      directories: Object.freeze(Array.from(directories).sort()),
+      maxDepth
+    };
+  }
+
+  /**
+   * Pretty print the file structure
+   */
+  public printStructure(weBuildString: string): string {
+    const { files, commands } = this.parseStructure(weBuildString);
+    let output = '';
+
+    if (files.length > 0) {
+      output += '📁 Files Structure:\n';
+      output += '─'.repeat(50) + '\n';
+      
+      const fileTree = this.buildFileTree(files.map(f => f.fileName));
+      fileTree.forEach(item => {
+        output += item + '\n';
+      });
+      output += '\n';
+    }
+
+    if (commands.length > 0) {
+      output += '⚡ Commands:\n';
+      output += '─'.repeat(50) + '\n';
+      commands.forEach((cmd, index) => {
+        output += `${index + 1}. ${cmd.command}\n`;
+      });
+    }
+
+    return output;
   }
 
   /**
@@ -203,409 +289,106 @@ export class WeBuildParser {
   }
 
   /**
-   * Validate file name and content
+   * Build hierarchical directory structure
    */
-  private validateFile(fileName: string, content: string): void {
-    if (!this.options.validateContent) return;
+  private buildDirectoryStructure(fileNames: readonly string[]): DirectoryStructure {
+    const structure: DirectoryStructure = {};
 
-    // Validate file name
-    if (fileName.includes('..') || fileName.startsWith('/')) {
-      throw new WeBuildParseError(`Invalid file path: ${fileName}`, fileName);
-    }
-
-    // Validate file extension
-    const extension = fileName.substring(fileName.lastIndexOf('.'));
-    if (extension && !this.options.allowedExtensions.includes(extension)) {
-      throw new WeBuildParseError(`File extension not allowed: ${extension}`, fileName);
-    }
-
-    // Validate file size
-    if (content.length > this.options.maxFileSize) {
-      throw new WeBuildParseError(`File too large: ${content.length} bytes`, fileName);
-    }
-  }
-
-  /**
-   * Clean content by removing extra whitespace and normalizing line endings
-   */
-  private cleanContent(content: string): string {
-    return content
-      .replace(/^\n+/, '') // Remove leading newlines
-      .replace(/\n+$/, '') // Remove trailing newlines
-      .replace(/\r\n/g, '\n'); // Normalize line endings
-  }
-
-  /**
-   * Create files in WebContainer from parsed weBuild format
-   */
-  public async createFilesInWebContainer(
-    weBuildString: string,
-    webContainer?: WebContainer
-  ): Promise<void> {
-    const container = this.getWebContainer(webContainer);
-    const { files } = this.parseWeBuildFormat(weBuildString);
-
-    try {
-      // Create directory structure for files
-      const directories = this.extractDirectories(files);
-      await this.createDirectories(container, directories);
-
-      // Create files
-      await this.writeFiles(container, files);
-    } catch (error) {
-      throw new WebContainerError(
-        `Failed to create files: ${error}`,
-        'createFiles'
-      );
-    }
-  }
-
-  /**
-   * Execute terminal commands from parsed weBuild format
-   */
-  public async executeCommandsInWebContainer(
-    weBuildString: string,
-    webContainer?: WebContainer,
-    options: ExecutionOptions = {}
-  ): Promise<void> {
-    const container = this.getWebContainer(webContainer);
-    const { commands } = this.parseWeBuildFormat(weBuildString);
-
-    for (const cmd of commands) {
-      try {
-        console.log(`Executing command: ${cmd.command}`);
-        
-        const process = await container.spawn('sh', ['-c', cmd.command], {
-          cwd: options.workingDirectory,
-          env: options.env
-        });
-        
-        // Handle timeout if specified
-        let timeoutId: NodeJS.Timeout | undefined;
-        if (options.timeout) {
-          timeoutId = setTimeout(() => {
-            process.kill();
-          }, options.timeout);
-        }
-
-        // Stream output
-        process.output.pipeTo(
-          new WritableStream({
-            write(data: string) {
-              console.log(data);
-            }
-          })
-        );
-
-        const exitCode = await process.exit;
-        
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
-
-        if (exitCode !== 0) {
-          throw new WebContainerError(
-            `Command failed with exit code: ${exitCode}`,
-            'executeCommand'
-          );
-        }
-      } catch (error) {
-        throw new WebContainerError(
-          `Error executing command '${cmd.command}': ${error}`,
-          'executeCommand'
-        );
-      }
-    }
-  }
-
-  /**
-   * Parse and setup complete project in WebContainer
-   */
-  public async setupProjectInWebContainer(
-    weBuildString: string,
-    webContainer?: WebContainer,
-    options: ExecutionOptions = {}
-  ): Promise<void> {
-    const container = this.getWebContainer(webContainer);
-
-    console.log('Setting up project in WebContainer...');
-
-    try {
-      // First create all files
-      await this.createFilesInWebContainer(weBuildString, container);
-
-      // Then execute commands
-      await this.executeCommandsInWebContainer(weBuildString, container, options);
-
-      console.log('Project setup complete!');
-    } catch (error) {
-      throw new WebContainerError(
-        `Failed to setup project: ${error}`,
-        'setupProject'
-      );
-    }
-  }
-
-  /**
-   * Get file structure from parsed weBuild format
-   */
-  public getFileStructure(weBuildString: string): Readonly<Record<string, string>> {
-    const { files } = this.parseWeBuildFormat(weBuildString);
-    const structure: Record<string, string> = {};
-
-    files.forEach(file => {
-      structure[file.fileName] = file.content;
-    });
-
-    return Object.freeze(structure);
-  }
-
-  /**
-   * Convert parsed files to WebContainer FileSystemTree format
-   */
-  public toFileSystemTree(weBuildString: string): FileSystemTree {
-    const { files } = this.parseWeBuildFormat(weBuildString);
-    const tree: FileSystemTree = {};
-
-    files.forEach(file => {
-      const parts = file.fileName.split('/');
-      let current: any = tree;
+    fileNames.forEach(fileName => {
+      const parts = fileName.split('/');
+      let current: any = structure;
 
       for (let i = 0; i < parts.length - 1; i++) {
         const part = parts[i];
         if (!current[part]) {
-          current[part] = {
-            directory: {}
-          };
+          current[part] = {};
         }
-        current = current[part].directory;
+        current = current[part];
       }
 
-      const fileName = parts[parts.length - 1];
-      current[fileName] = {
-        file: {
-          contents: file.content
-        }
-      };
+      const filename = parts[parts.length - 1];
+      current[filename] = 'file';
+    });
+
+    return structure;
+  }
+
+  /**
+   * Build flat file tree with indentation
+   */
+  private buildFileTree(fileNames: readonly string[]): string[] {
+    const tree: string[] = [];
+    const directories = new Set<string>();
+
+    // First, collect all directories
+    fileNames.forEach(fileName => {
+      const parts = fileName.split('/');
+      for (let i = 1; i < parts.length; i++) {
+        directories.add(parts.slice(0, i).join('/'));
+      }
+    });
+
+    // Sort directories and files
+    const allItems = [
+      ...Array.from(directories).map(dir => ({ type: 'dir', path: dir })),
+      ...fileNames.map(file => ({ type: 'file', path: file }))
+    ].sort((a, b) => a.path.localeCompare(b.path));
+
+    // Build tree with proper indentation
+    allItems.forEach(item => {
+      const depth = item.path.split('/').length - 1;
+      const indent = '  '.repeat(depth);
+      const name = item.path.split('/').pop() || item.path;
+      const icon = item.type === 'dir' ? '📁' : '📄';
+      
+      tree.push(`${indent}${icon} ${name}`);
     });
 
     return tree;
   }
-
-  /**
-   * Mount files directly using WebContainer mount API
-   */
-  public async mountProject(
-    weBuildString: string,
-    webContainer?: WebContainer,
-    options: ExecutionOptions = {}
-  ): Promise<void> {
-    const container = this.getWebContainer(webContainer);
-
-    try {
-      const fileSystemTree = this.toFileSystemTree(weBuildString);
-      
-      await container.mount(fileSystemTree);
-      console.log('Project mounted successfully!');
-      
-      // Execute any terminal commands after mounting
-      await this.executeCommandsInWebContainer(weBuildString, container, options);
-    } catch (error) {
-      throw new WebContainerError(
-        `Error mounting project: ${error}`,
-        'mountProject'
-      );
-    }
-  }
-
-  /**
-   * Helper method to get WebContainer instance
-   */
-  private getWebContainer(webContainer?: WebContainer): WebContainer {
-    const container = webContainer || this.webContainer;
-    if (!container) {
-      throw new WebContainerError(
-        'WebContainer instance is required. Use setWebContainer() or pass it as parameter.',
-        'getWebContainer'
-      );
-    }
-    return container;
-  }
-
-  /**
-   * Extract directories from file list
-   */
-  private extractDirectories(files: readonly ParsedWeBuildFile[]): Set<string> {
-    const directories = new Set<string>();
-    
-    files.forEach(file => {
-      const parts = file.fileName.split('/');
-      if (parts.length > 1) {
-        for (let i = 1; i < parts.length; i++) {
-          directories.add(parts.slice(0, i).join('/'));
-        }
-      }
-    });
-
-    return directories;
-  }
-
-  /**
-   * Create directories in WebContainer
-   */
-  private async createDirectories(
-    container: WebContainer,
-    directories: Set<string>
-  ): Promise<void> {
-    for (const dir of directories) {
-      try {
-        await container.fs.mkdir(dir, { recursive: true });
-      } catch (error) {
-        // Directory might already exist, log warning but continue
-        console.warn(`Could not create directory ${dir}:`, error);
-      }
-    }
-  }
-
-  /**
-   * Write files to WebContainer
-   */
-  private async writeFiles(
-    container: WebContainer,
-    files: readonly ParsedWeBuildFile[]
-  ): Promise<void> {
-    for (const file of files) {
-      try {
-        await container.fs.writeFile(file.fileName, file.content);
-        console.log(`Created file: ${file.fileName}`);
-      } catch (error) {
-        throw new WebContainerError(
-          `Error writing file: ${error}`,
-          'writeFile',
-          file.fileName
-        );
-      }
-    }
-  }
-
-  /**
-   * Get parser statistics
-   */
-  public getStats(weBuildString: string): {
-    readonly totalFiles: number;
-    readonly totalCommands: number;
-    readonly filesByExtension: Readonly<Record<string, number>>;
-    readonly totalSize: number;
-  } {
-    const { files, commands } = this.parseWeBuildFormat(weBuildString);
-    
-    const filesByExtension: Record<string, number> = {};
-    let totalSize = 0;
-
-    files.forEach(file => {
-      const extension = file.fileName.substring(file.fileName.lastIndexOf('.')) || 'no-extension';
-      filesByExtension[extension] = (filesByExtension[extension] || 0) + 1;
-      totalSize += file.content.length;
-    });
-
-    return {
-      totalFiles: files.length,
-      totalCommands: commands.length,
-      filesByExtension: Object.freeze(filesByExtension),
-      totalSize
-    };
-  }
 }
 
 // Factory function for getting singleton instance
-export function getWeBuildParser(options?: ParserOptions): WeBuildParser {
-  return WeBuildParser.getInstance(options);
+export function getWeBuildStructureParser(): WeBuildStructureParser {
+  return WeBuildStructureParser.getInstance();
 }
 
-// Legacy factory function (deprecated, use getWeBuildParser instead)
-export function createWeBuildParser(
-  webContainer?: WebContainer,
-  options?: ParserOptions
-): WeBuildParser {
-  const parser = WeBuildParser.getInstance(options);
-  if (webContainer) {
-    parser.setWebContainer(webContainer);
-  }
-  return parser;
-}
-
-// Type guards
-export function isFileNode(node: FileSystemNode): node is FileNode {
-  return 'file' in node;
-}
-
-export function isDirectoryNode(node: FileSystemNode): node is DirectoryNode {
-  return 'directory' in node;
-}
-
-export default WeBuildParser;
+export default WeBuildStructureParser;
 
 /*
-// Example usage with Singleton pattern
-async function singletonExample() {
-  console.log('=== Singleton Pattern Example ===');
+// Example usage
+async function structureParserExample() {
+  console.log('=== WeBuild Structure Parser Example ===');
   
-  try {
-    // Boot WebContainer
-    const webContainer = await WebContainer.boot();
-    
-    // Get singleton instance
-    const parser = getWeBuildParser({
-      validateContent: true,
-      maxFileSize: 2 * 1024 * 1024 // 2MB
-    });
-    
-    // Set WebContainer on singleton
-    parser.setWebContainer(webContainer);
-    
-    // Use the same instance throughout your app
-    const parser2 = getWeBuildParser(); // Returns same instance
-    console.log('Same instance?', parser === parser2); // true
-    
-    const realWeBuildCode = `
-<weBuild action="create" fileName="package.json">
+  const parser = getWeBuildStructureParser();
+  
+  const sampleWeBuildCode = `
 {
-  "name": "singleton-webuild-app",
-  "version": "1.0.0",
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build"
+  "artifacts": {
+    "app/components/Header.tsx": "<weBuild action=\"create\" fileName=\"app/components/Header.tsx\">\nimport React from 'react';\nexport default function Header() {\n  return <header>My App</header>;\n}\n</weBuild>",
+    "app/layout.tsx": "<weBuild action=\"create\" fileName=\"app/layout.tsx\">\nimport React from 'react';\nexport default function Layout() {\n  return (\n    <html>\n      <head>\n        <title>My App</title>\n      </head>\n      <body>\n        <Header />\n      </body>\n    </html>\n  );\n}\n</weBuild>"
   },
-  "dependencies": {
-    "next": "15.2.4",
-    "react": "^19",
-    "react-dom": "^19"
-  }
+  "headingMessage": "Todo application created",
+  "description": "Created basic todo application with header and layout",
+  "error": null
 }
-</weBuild>
-
-<weBuild action="create" fileName="app/page.tsx">
-export default function HomePage() {
-  return (
-    <div className="text-center p-8">
-      <h1>Singleton WeBuild Parser</h1>
-      <p>Single instance across the entire application!</p>
-    </div>
-  );
-}
-</weBuild>
-
-<weBuild action="terminal" command="npm install">
-</weBuild>
-    `;
-    
-    // Use singleton to process weBuild format
-    await parser.setupProjectInWebContainer(realWeBuildCode);
-    
-    console.log('✅ Singleton pattern working correctly!');
-    
-  } catch (error) {
-    console.error('❌ Error with singleton example:', error);
-  }
+  `;
+  
+  // Get structure only (no content)
+  const structure = parser.parseStructure(sampleWeBuildCode);
+  console.log('Files found:', structure.files.map(f => f.fileName));
+  console.log('Commands found:', structure.commands.map(c => c.command));
+  
+  // Generate structure format (filenames only)
+  const structureFormat = parser.generateStructureFormat(sampleWeBuildCode);
+  console.log('\n📋 Structure Format:\n', structureFormat);
+  
+  // Pretty print structure
+  const prettyStructure = parser.printStructure(sampleWeBuildCode);
+  console.log('\n🌳 Pretty Structure:\n', prettyStructure);
+  
+  // Get statistics
+  const stats = parser.getStructureStats(sampleWeBuildCode);
+  console.log('📊 Statistics:', stats);
 }
 */

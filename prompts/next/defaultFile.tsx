@@ -361,6 +361,7 @@ Thumbs.db
 }
 </weBuild>
 
+<weBuild action="terminal" command="npm install">
 <weBuild action="terminal" command="npm run dev">
 
 `

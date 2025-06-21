@@ -1,1096 +1,1097 @@
 "use client"
 
-import React from "react"
-
-import { useState, useRef, useCallback } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { useSearchParams, useRouter } from "next/navigation"
 import {
-  Paperclip,
-  Download,
-  Share,
-  RotateCcw,
-  Copy,
-  Code,
-  Smartphone,
-  Monitor,
-  Tablet,
-  ExternalLink,
-  Sparkles,
-  Zap,
-  ImageIcon,
-  ArrowUp,
-  MoreHorizontal,
-  Eye,
-  ChevronRight,
-  ChevronDown,
-  Folder,
-  FolderOpen,
-  X,
-  Plus,
-  Search,
-  FileText,
-  RefreshCw,
-  GripVertical,
-  Menu,
-  PanelLeftClose,
-  PanelRightClose,
+    Paperclip,
+    RotateCcw,
+    Copy,
+    Code,
+    Sparkles,
+    ArrowUp,
+    Eye,
+    ChevronRight,
+    ChevronDown,
+    Folder,
+    FolderOpen,
+    X,
+    FileText,
+    GripVertical,
+    Menu,
+    PanelLeftClose,
+    Loader2,
+    AlertCircle,
+    Download,
 } from "lucide-react"
 
+import { toast } from "@/components/ui/use-toast"
+
+
+import { defaultFiles } from "@/prompts/next/defaultFile"
+import PreviewSection from "@/components/PreviewSection"
+
 interface FileNode {
-  name: string
-  type: "file" | "folder"
-  children?: FileNode[]
-  content?: string
-  language?: string
-  isOpen?: boolean
+    name: string
+    type: "file" | "folder"
+    children?: FileNode[]
+    content?: string
+    language?: string
+    isOpen?: boolean
+    path: string
+    lastModified?: Date
+    size?: number
 }
 
-export default function Message({ params }: { params: { id: string } }) {
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      type: "user" as const,
-      content:
-        "Create a modern e-commerce product page with image gallery, product details, reviews, and add to cart functionality. Make it responsive and include a clean, professional design.",
-      timestamp: "2 hours ago",
-    },
-    {
-      id: 2,
-      type: "assistant" as const,
-      content:
-        "I'll create a modern e-commerce product page for you with all the features you requested. This will include an image gallery with zoom functionality, detailed product information, customer reviews section, and a responsive add to cart component.",
-      timestamp: "2 hours ago",
-      hasCode: true,
-    },
-    {
-      id: 3,
-      type: "user" as const,
-      content: "Can you add a related products section at the bottom and make the reviews more interactive?",
-      timestamp: "1 hour ago",
-    },
-    {
-      id: 4,
-      type: "assistant" as const,
-      content:
-        "Perfect! I've added a related products section with product recommendations and made the reviews section more interactive with helpful/not helpful buttons and review filtering options.",
-      timestamp: "1 hour ago",
-      hasCode: true,
-    },
-  ])
+interface Message {
+    id: string
+    type: "user" | "assistant"
+    content: string
+    timestamp: Date
+    hasCode?: boolean
+    isError?: boolean
+    metadata?: {
+        filesGenerated?: string[]
+        tokensUsed?: number
+        processingTime?: number
+    }
+}
 
-  const [input, setInput] = useState("")
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [selectedDevice, setSelectedDevice] = useState<"mobile" | "tablet" | "desktop">("desktop")
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(["app", "components", "lib"]))
-  const [selectedFile, setSelectedFile] = useState("app/page.tsx")
-  const [openTabs, setOpenTabs] = useState<string[]>(["app/page.tsx", "components/product-gallery.tsx"])
-  const [activeTab, setActiveTab] = useState("app/page.tsx")
-  const [viewMode, setViewMode] = useState<"preview" | "code">("preview")
+interface ChatSession {
+    id: string
+    title: string
+    createdAt: Date
+    updatedAt: Date
+    messages: Message[]
+    projectName?: string
+    projectType?: string
+}
 
-  // Panel sizing states
-  const [chatWidth, setChatWidth] = useState(320)
-  const [explorerWidth, setExplorerWidth] = useState(256)
-  const [isResizing, setIsResizing] = useState<"chat" | "explorer" | null>(null)
-  const [isChatCollapsed, setIsChatCollapsed] = useState(false)
-  const [isExplorerCollapsed, setIsExplorerCollapsed] = useState(false)
-  const [isMobile, setIsMobile] = useState(false)
+interface ApiResponse {
+    artifacts?: Record<string, string>
+    headingMessage?: string
+    description?: string
+    error?: string | null
+    metadata?: {
+        tokensUsed?: number
+        processingTime?: number
+    }
+}
 
-  const chatResizeRef = useRef<HTMLDivElement>(null)
-  const explorerResizeRef = useRef<HTMLDivElement>(null)
+interface ChatPageProps {
+    params: { id: string }
+}
 
-  const projectFiles: FileNode = {
-    name: "ecommerce-product-page",
-    type: "folder",
-    isOpen: true,
-    children: [
-      {
-        name: "app",
-        type: "folder",
-        isOpen: true,
-        children: [
-          { name: "page.tsx", type: "file", language: "tsx" },
-          { name: "layout.tsx", type: "file", language: "tsx" },
-          { name: "globals.css", type: "file", language: "css" },
-          { name: "loading.tsx", type: "file", language: "tsx" },
-        ],
-      },
-      {
-        name: "components",
-        type: "folder",
-        isOpen: true,
-        children: [
-          {
-            name: "ui",
+export default function ChatPage({ params }: ChatPageProps) {
+    const searchParams = useSearchParams()
+    const router = useRouter()
+    const initialPrompt = searchParams.get("prompt")
+    const messagesEndRef = useRef<HTMLDivElement>(null)
+
+    // Core state
+    const [session, setSession] = useState<ChatSession | null>(null)
+    const [messages, setMessages] = useState<Message[]>([])
+    const [input, setInput] = useState("")
+    const [isGenerating, setIsGenerating] = useState(false)
+    const [isLoading, setIsLoading] = useState(true)
+    const [error, setError] = useState<string | null>(null)
+
+    // UI state
+    const [selectedDevice, setSelectedDevice] = useState<"mobile" | "tablet" | "desktop">("desktop")
+    const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set())
+    const [selectedFile, setSelectedFile] = useState<string | null>(null)
+    const [openTabs, setOpenTabs] = useState<string[]>([])
+    const [activeTab, setActiveTab] = useState<string | null>(null)
+    const [viewMode, setViewMode] = useState<"preview" | "code">("preview")
+    const [projectFiles, setProjectFiles] = useState<FileNode | null>(null)
+    const [codeFiles, setCodeFiles] = useState<Record<string, string>>({})
+
+    // Panel sizing states
+    const [chatWidth, setChatWidth] = useState(320)
+    const [explorerWidth, setExplorerWidth] = useState(256)
+    const [isResizing, setIsResizing] = useState<"chat" | "explorer" | null>(null)
+    const [isChatCollapsed, setIsChatCollapsed] = useState(false)
+    const [isExplorerCollapsed, setIsExplorerCollapsed] = useState(false)
+    const [isMobile, setIsMobile] = useState(false)
+    const [rowArtifact, setRowArtifact] = useState<string | null>(defaultFiles)
+
+    // Auto-scroll to bottom of messages
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    }
+
+    useEffect(() => {
+        scrollToBottom()
+    }, [messages])
+
+    // Load chat session
+    useEffect(() => {
+        const loadSession = async () => {
+            try {
+                setIsLoading(true)
+                setError(null)
+
+                // Load existing session or create new one
+                const response = await fetch(`/api/chat/${params.id}`)
+
+                if (response.ok) {
+                    const sessionData = await response.json()
+                    setSession(sessionData)
+                    setMessages(sessionData.messages || [])
+
+                    // Load project files if they exist
+                    if (sessionData.projectFiles) {
+                        setProjectFiles(sessionData.projectFiles)
+                        setCodeFiles(sessionData.codeFiles || {})
+
+                        // Set up initial UI state
+                        const firstFile = findFirstFile(sessionData.projectFiles)
+                        if (firstFile) {
+                            setSelectedFile(firstFile.path)
+                            setActiveTab(firstFile.path)
+                            setOpenTabs([firstFile.path])
+                        }
+                    }
+                } else if (response.status === 404) {
+                    // Create new session
+                    const newSession: ChatSession = {
+                        id: params.id,
+                        title: "New Chat",
+                        createdAt: new Date(),
+                        updatedAt: new Date(),
+                        messages: [],
+                    }
+                    setSession(newSession)
+
+                    // If there's an initial prompt, process it
+                    if (initialPrompt) {
+                        await handleInitialPrompt(initialPrompt, newSession)
+                    }
+                } else {
+                    throw new Error("Failed to load chat session")
+                }
+            } catch (err) {
+                setError(err instanceof Error ? err.message : "Failed to load chat")
+                toast({
+                    title: "Error",
+                    description: "Failed to load chat session",
+                    variant: "destructive",
+                })
+            } finally {
+                setIsLoading(false)
+            }
+        }
+
+        loadSession()
+    }, [params.id, initialPrompt])
+
+    // Handle initial prompt
+    const handleInitialPrompt = async (prompt: string, currentSession: ChatSession) => {
+        const userMessage: Message = {
+            id: generateId(),
+            type: "user",
+            content: prompt,
+            timestamp: new Date(),
+        }
+
+        setMessages([userMessage])
+        await processMessage(prompt, [userMessage], currentSession)
+    }
+
+    // Process message with AI
+    const processMessage = async (content: string, currentMessages: Message[], currentSession: ChatSession) => {
+        setIsGenerating(true)
+
+        try {
+            const response = await fetch("/api/llm", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    message: content,
+                    availableFiles: getAvailableFiles(),
+                    context: currentMessages.slice(-10), // Last 10 messages for context
+                    sessionId: currentSession.id,
+                }),
+            })
+
+            if (!response.ok) {
+                throw new Error(`API request failed: ${response.statusText}`)
+            }
+
+            const data: ApiResponse = await response.json()
+
+            if (data.error) {
+                throw new Error(data.error)
+            }
+
+            // Process generated files
+            if (data.artifacts) {
+                const newCodeFiles = processArtifacts(data.artifacts)
+                setCodeFiles((prev) => ({ ...prev, ...newCodeFiles }))
+
+                // Update project structure
+                const updatedProjectFiles = updateProjectStructure(Object.keys(newCodeFiles))
+                setProjectFiles(updatedProjectFiles)
+                setRowArtifact((prev) => prev + String(newCodeFiles));
+                // Open first generated file if no file is currently open
+                if (!activeTab && Object.keys(newCodeFiles).length > 0) {
+                    const firstFile = Object.keys(newCodeFiles)[0]
+                    setSelectedFile(firstFile)
+                    setActiveTab(firstFile)
+                    setOpenTabs([firstFile])
+                }
+            }
+
+            // Add AI response
+            const aiMessage: Message = {
+                id: generateId(),
+                type: "assistant",
+                content: data.headingMessage || "I've processed your request.",
+                timestamp: new Date(),
+                hasCode: !!data.artifacts,
+                metadata: {
+                    filesGenerated: data.artifacts ? Object.keys(data.artifacts) : undefined,
+                    tokensUsed: data.metadata?.tokensUsed,
+                    processingTime: data.metadata?.processingTime,
+                },
+            }
+
+            const updatedMessages = [...currentMessages, aiMessage]
+            setMessages(updatedMessages)
+
+            // Update session
+            const updatedSession = {
+                ...currentSession,
+                messages: updatedMessages,
+                updatedAt: new Date(),
+                title: currentSession.title === "New Chat" ? generateTitle(content) : currentSession.title,
+            }
+            setSession(updatedSession)
+
+            // Save session
+            await saveSession(updatedSession)
+        } catch (err) {
+            const errorMessage: Message = {
+                id: generateId(),
+                type: "assistant",
+                content: err instanceof Error ? err.message : "An error occurred while processing your request.",
+                timestamp: new Date(),
+                isError: true,
+            }
+
+            const updatedMessages = [...currentMessages, errorMessage]
+            setMessages(updatedMessages)
+
+            toast({
+                title: "Error",
+                description: errorMessage.content,
+                variant: "destructive",
+            })
+        } finally {
+            setIsGenerating(false)
+        }
+    }
+
+    // Process artifacts from API response
+    const processArtifacts = (artifacts: Record<string, string>): Record<string, string> => {
+        const cleanCodeFiles: Record<string, string> = {}
+
+        Object.entries(artifacts).forEach(([fileName, content]) => {
+            try {
+                // Extract content between weBuild tags if present
+                const weBuildRegex = /<weBuild[^>]*>([\s\S]*?)<\/weBuild>/
+                const match = content.match(weBuildRegex)
+
+                if (match && match[1]) {
+                    cleanCodeFiles[fileName] = match[1].trim()
+                } else {
+                    cleanCodeFiles[fileName] = content
+                }
+            } catch (error) {
+                console.error(`Error processing artifact ${fileName}:`, error)
+                cleanCodeFiles[fileName] = content
+            }
+        })
+
+        return cleanCodeFiles
+    }
+
+    // Update project structure based on file paths
+    const updateProjectStructure = (filePaths: string[]): FileNode => {
+        const root: FileNode = {
+            name: session?.projectName || "project",
             type: "folder",
-            children: [
-              { name: "button.tsx", type: "file", language: "tsx" },
-              { name: "card.tsx", type: "file", language: "tsx" },
-              { name: "badge.tsx", type: "file", language: "tsx" },
-              { name: "input.tsx", type: "file", language: "tsx" },
-            ],
-          },
-          { name: "product-gallery.tsx", type: "file", language: "tsx" },
-          { name: "product-details.tsx", type: "file", language: "tsx" },
-          { name: "reviews-section.tsx", type: "file", language: "tsx" },
-          { name: "related-products.tsx", type: "file", language: "tsx" },
-          { name: "add-to-cart.tsx", type: "file", language: "tsx" },
-        ],
-      },
-      {
-        name: "lib",
-        type: "folder",
-        isOpen: true,
-        children: [
-          { name: "utils.ts", type: "file", language: "ts" },
-          { name: "data.ts", type: "file", language: "ts" },
-          { name: "types.ts", type: "file", language: "ts" },
-        ],
-      },
-      {
-        name: "public",
-        type: "folder",
-        children: [
-          {
-            name: "images",
-            type: "folder",
-            children: [
-              { name: "product-1.jpg", type: "file" },
-              { name: "product-2.jpg", type: "file" },
-              { name: "product-3.jpg", type: "file" },
-            ],
-          },
-          {
-            name: "icons",
-            type: "folder",
-            children: [
-              { name: "favicon.ico", type: "file" },
-              { name: "logo.svg", type: "file" },
-            ],
-          },
-        ],
-      },
-      {
-        name: "styles",
-        type: "folder",
-        children: [
-          { name: "globals.css", type: "file", language: "css" },
-          { name: "components.css", type: "file", language: "css" },
-        ],
-      },
-      { name: "package.json", type: "file", language: "json" },
-      { name: "tailwind.config.js", type: "file", language: "js" },
-      { name: "next.config.js", type: "file", language: "js" },
-      { name: "tsconfig.json", type: "file", language: "json" },
-      { name: "README.md", type: "file", language: "markdown" },
-    ],
-  }
+            isOpen: true,
+            path: "",
+            children: [],
+        }
 
-  const codeFiles: Record<string, string> = {
-    "app/page.tsx": `import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { ProductGallery } from "@/components/product-gallery"
-import { ProductDetails } from "@/components/product-details"
-import { ReviewsSection } from "@/components/reviews-section"
-import { RelatedProducts } from "@/components/related-products"
+        filePaths.forEach((filePath) => {
+            const parts = filePath.split("/")
+            let currentNode = root
 
-export default function ProductPage() {
-  return (
-    <div className="container mx-auto px-4 py-8">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 mb-16">
-        <ProductGallery />
-        <ProductDetails />
-      </div>
-      
-      <ReviewsSection />
-      <RelatedProducts />
-    </div>
-  )
-}`,
-    "components/product-gallery.tsx": `"use client"
+            parts.forEach((part, index) => {
+                const isFile = index === parts.length - 1
+                const currentPath = parts.slice(0, index + 1).join("/")
 
-import { useState } from "react"
-import { ChevronLeft, ChevronRight, ZoomIn } from 'lucide-react'
-import { Button } from "@/components/ui/button"
+                if (!currentNode.children) {
+                    currentNode.children = []
+                }
 
-const productImages = [
-  "/images/product-1.jpg",
-  "/images/product-2.jpg", 
-  "/images/product-3.jpg",
-  "/images/product-4.jpg"
-]
+                let existingNode = currentNode.children.find((child) => child.name === part)
 
-export function ProductGallery() {
-  const [selectedImage, setSelectedImage] = useState(0)
-  const [isZoomed, setIsZoomed] = useState(false)
+                if (!existingNode) {
+                    existingNode = {
+                        name: part,
+                        type: isFile ? "file" : "folder",
+                        path: currentPath,
+                        children: isFile ? undefined : [],
+                        isOpen: !isFile,
+                        language: isFile ? getFileLanguage(part) : undefined,
+                        lastModified: new Date(),
+                        size: isFile ? codeFiles[filePath]?.length || 0 : undefined,
+                    }
+                    currentNode.children.push(existingNode)
+                }
 
-  return (
-    <div className="space-y-4">
-      <div className="relative aspect-square bg-gray-100 rounded-lg overflow-hidden group">
-        <img 
-          src={productImages[selectedImage] || "/placeholder.svg"} 
-          alt="Product"
-          className={\`w-full h-full object-cover transition-transform duration-300 \${
-            isZoomed ? 'scale-150' : 'scale-100'
-          }\`}
-          onClick={() => setIsZoomed(!isZoomed)}
-        />
-        
-        <Button
-          variant="ghost"
-          size="icon"
-          className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/80 hover:bg-white opacity-0 group-hover:opacity-100 transition-opacity"
-          onClick={() => setSelectedImage(prev => prev > 0 ? prev - 1 : productImages.length - 1)}
-        >
-          <ChevronLeft className="w-4 h-4" />
-        </Button>
-        
-        <Button
-          variant="ghost"
-          size="icon"
-          className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/80 hover:bg-white opacity-0 group-hover:opacity-100 transition-opacity"
-          onClick={() => setSelectedImage(prev => prev < productImages.length - 1 ? prev + 1 : 0)}
-        >
-          <ChevronRight className="w-4 h-4" />
-        </Button>
-        
-        <Button
-          variant="ghost"
-          size="icon"
-          className="absolute top-2 right-2 bg-white/80 hover:bg-white opacity-0 group-hover:opacity-100 transition-opacity"
-          onClick={() => setIsZoomed(!isZoomed)}
-        >
-          <ZoomIn className="w-4 h-4" />
-        </Button>
-      </div>
-      
-      <div className="grid grid-cols-4 gap-2">
-        {productImages.map((image, i) => (
-          <div 
-            key={i} 
-            className={\`aspect-square bg-gray-100 rounded border-2 cursor-pointer transition-colors \${
-              selectedImage === i ? 'border-blue-500' : 'border-transparent hover:border-gray-300'
-            }\`}
-            onClick={() => setSelectedImage(i)}
-          >
-            <img 
-              src={image || "/placeholder.svg"} 
-              alt={\`Thumbnail \${i + 1}\`} 
-              className="w-full h-full object-cover rounded" 
-            />
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}`,
-    "components/product-details.tsx": `"use client"
+                if (!isFile) {
+                    currentNode = existingNode
+                }
+            })
+        })
 
-import { useState } from "react"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Star, Heart, ShoppingCart, Minus, Plus } from 'lucide-react'
+        // Update expanded folders
+        const newExpanded = new Set(expandedFolders)
+        const addExpandedPaths = (node: FileNode, path = "") => {
+            const fullPath = path ? `${path}/${node.name}` : node.name
+            if (node.type === "folder" && node.isOpen) {
+                newExpanded.add(fullPath)
+            }
+            if (node.children) {
+                node.children.forEach((child) => addExpandedPaths(child, fullPath))
+            }
+        }
+        addExpandedPaths(root)
+        setExpandedFolders(newExpanded)
 
-export function ProductDetails() {
-  const [selectedColor, setSelectedColor] = useState(0)
-  const [quantity, setQuantity] = useState(1)
-  const [isFavorite, setIsFavorite] = useState(false)
-
-  const colors = [
-    { name: "Midnight Black", class: "bg-black" },
-    { name: "Pearl White", class: "bg-white border-2 border-gray-200" },
-    { name: "Ocean Blue", class: "bg-blue-500" },
-    { name: "Crimson Red", class: "bg-red-500" }
-  ]
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900 mb-3">
-          Premium Wireless Headphones
-        </h1>
-        <div className="flex items-center space-x-3 mb-4">
-          <div className="flex text-yellow-400">
-            {[1, 2, 3, 4, 5].map((star) => (
-              <Star key={star} className="w-5 h-5 fill-current" />
-            ))}
-          </div>
-          <span className="text-sm text-gray-600 font-medium">(128 reviews)</span>
-          <span className="text-sm text-green-600 font-medium">✓ In Stock</span>
-        </div>
-        <div className="flex items-center space-x-4 mb-6">
-          <span className="text-4xl font-bold text-gray-900">$299.99</span>
-          <span className="text-xl text-gray-500 line-through">$399.99</span>
-          <Badge className="bg-red-100 text-red-800 px-3 py-1">
-            Save $100 (25% OFF)
-          </Badge>
-        </div>
-      </div>
-
-      <div className="space-y-6">
-        <div>
-          <h3 className="font-semibold text-gray-900 mb-3">Color</h3>
-          <div className="flex space-x-3">
-            {colors.map((color, i) => (
-              <div
-                key={i}
-                className={\`w-10 h-10 rounded-full \${color.class} cursor-pointer ring-2 ring-offset-2 transition-all \${
-                  selectedColor === i ? 'ring-gray-400' : 'ring-transparent hover:ring-gray-300'
-                }\`}
-                title={color.name}
-                onClick={() => setSelectedColor(i)}
-              />
-            ))}
-          </div>
-          <p className="text-sm text-gray-600 mt-2">Selected: {colors[selectedColor].name}</p>
-        </div>
-
-        <div className="flex space-x-4 pt-4">
-          <Button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 text-lg font-semibold">
-            <ShoppingCart className="w-5 h-5 mr-2" />
-            Add to Cart
-          </Button>
-          <Button 
-            variant="outline" 
-            className={\`px-6 py-3 \${isFavorite ? 'text-red-500 border-red-500' : ''}\`}
-            onClick={() => setIsFavorite(!isFavorite)}
-          >
-            <Heart className={\`w-5 h-5 \${isFavorite ? 'fill-current' : ''}\`} />
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}`,
-    "package.json": `{
-  "name": "ecommerce-product-page",
-  "version": "0.1.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
-  },
-  "dependencies": {
-    "react": "^18",
-    "react-dom": "^18",
-    "next": "14.0.0",
-    "@radix-ui/react-avatar": "^1.0.4",
-    "@radix-ui/react-button": "^1.0.3",
-    "@radix-ui/react-card": "^1.0.4",
-    "@radix-ui/react-badge": "^1.0.2",
-    "lucide-react": "^0.294.0",
-    "tailwindcss": "^3.3.0",
-    "autoprefixer": "^10.0.1",
-    "postcss": "^8",
-    "typescript": "^5",
-    "@types/node": "^20",
-    "@types/react": "^18",
-    "@types/react-dom": "^18"
-  },
-  "devDependencies": {
-    "eslint": "^8",
-    "eslint-config-next": "14.0.0"
-  }
-}`,
-  }
-
-  // Resize handlers
-  const handleMouseDown = useCallback((panel: "chat" | "explorer") => {
-    setIsResizing(panel)
-    document.body.style.cursor = "col-resize"
-    document.body.style.userSelect = "none"
-  }, [])
-
-  const handleMouseMove = useCallback(
-    (e: MouseEvent) => {
-      if (!isResizing) return
-
-      if (isResizing === "chat") {
-        const newWidth = Math.max(280, Math.min(500, e.clientX))
-        setChatWidth(newWidth)
-      } else if (isResizing === "explorer") {
-        const newWidth = Math.max(200, Math.min(400, e.clientX - chatWidth))
-        setExplorerWidth(newWidth)
-      }
-    },
-    [isResizing, chatWidth],
-  )
-
-  const handleMouseUp = useCallback(() => {
-    setIsResizing(null)
-    document.body.style.cursor = ""
-    document.body.style.userSelect = ""
-  }, [])
-
-  // Effect for mouse events
-  React.useEffect(() => {
-    if (isResizing) {
-      document.addEventListener("mousemove", handleMouseMove)
-      document.addEventListener("mouseup", handleMouseUp)
-      return () => {
-        document.removeEventListener("mousemove", handleMouseMove)
-        document.removeEventListener("mouseup", handleMouseUp)
-      }
-    }
-  }, [isResizing, handleMouseMove, handleMouseUp])
-
-  // Responsive handling
-  React.useEffect(() => {
-    const handleResize = () => {
-      const mobile = window.innerWidth < 768
-      setIsMobile(mobile)
-      if (mobile) {
-        setIsChatCollapsed(true)
-        setIsExplorerCollapsed(true)
-      }
+        return root
     }
 
-    handleResize()
-    window.addEventListener("resize", handleResize)
-    return () => window.removeEventListener("resize", handleResize)
-  }, [])
+    // Get available files for API context
+    const getAvailableFiles = (): string[] => {
+        if (!projectFiles) return []
 
-  const toggleFolder = (folderPath: string) => {
-    const newExpanded = new Set(expandedFolders)
-    if (newExpanded.has(folderPath)) {
-      newExpanded.delete(folderPath)
-    } else {
-      newExpanded.add(folderPath)
+        const files: string[] = []
+        const traverse = (node: FileNode) => {
+            if (node.type === "file") {
+                files.push(node.path)
+            } else if (node.children) {
+                node.children.forEach(traverse)
+            }
+        }
+        traverse(projectFiles)
+        return files
     }
-    setExpandedFolders(newExpanded)
-  }
 
-  const openFile = (filePath: string) => {
-    if (!openTabs.includes(filePath)) {
-      setOpenTabs([...openTabs, filePath])
+    // Find first file in project structure
+    const findFirstFile = (node: FileNode): FileNode | null => {
+        if (node.type === "file") return node
+        if (node.children) {
+            for (const child of node.children) {
+                const result = findFirstFile(child)
+                if (result) return result
+            }
+        }
+        return null
     }
-    setActiveTab(filePath)
-    setSelectedFile(filePath)
-  }
 
-  const closeTab = (filePath: string) => {
-    const newTabs = openTabs.filter((tab) => tab !== filePath)
-    setOpenTabs(newTabs)
-    if (activeTab === filePath && newTabs.length > 0) {
-      setActiveTab(newTabs[newTabs.length - 1])
+    // Save session to backend
+    const saveSession = async (sessionData: ChatSession) => {
+        try {
+            await fetch(`/api/chat/${sessionData.id}`, {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    ...sessionData,
+                    projectFiles,
+                    codeFiles,
+                }),
+            })
+        } catch (error) {
+            console.error("Failed to save session:", error)
+        }
     }
-  }
 
-  const getFileIcon = (fileName: string, type: string) => {
-    if (type === "folder") return null
+    // Handle sending new message
+    const handleSendMessage = async () => {
+        if (!input.trim() || !session) return
 
-    if (fileName.endsWith(".tsx") || fileName.endsWith(".ts")) {
-      return (
-        <div className="w-4 h-4 bg-blue-500 rounded-sm flex items-center justify-center text-white text-xs font-bold">
-          TS
-        </div>
-      )
-    }
-    if (fileName.endsWith(".css")) {
-      return (
-        <div className="w-4 h-4 bg-purple-500 rounded-sm flex items-center justify-center text-white text-xs font-bold">
-          CSS
-        </div>
-      )
-    }
-    if (fileName.endsWith(".json")) {
-      return (
-        <div className="w-4 h-4 bg-yellow-500 rounded-sm flex items-center justify-center text-white text-xs font-bold">
-          JSON
-        </div>
-      )
-    }
-    if (fileName.endsWith(".js")) {
-      return (
-        <div className="w-4 h-4 bg-yellow-600 rounded-sm flex items-center justify-center text-white text-xs font-bold">
-          JS
-        </div>
-      )
-    }
-    if (fileName.endsWith(".md")) {
-      return (
-        <div className="w-4 h-4 bg-gray-600 rounded-sm flex items-center justify-center text-white text-xs font-bold">
-          MD
-        </div>
-      )
-    }
-    if (fileName.match(/\.(jpg|png|gif|svg|ico)$/)) {
-      return <ImageIcon className="w-4 h-4 text-green-500" />
-    }
-    return <FileText className="w-4 h-4 text-gray-500" />
-  }
+        const userMessage: Message = {
+            id: generateId(),
+            type: "user",
+            content: input.trim(),
+            timestamp: new Date(),
+        }
 
-  const renderFileTree = (node: FileNode, path = "", level = 0) => {
-    const fullPath = path ? `${path}/${node.name}` : node.name
-    const isExpanded = expandedFolders.has(fullPath)
-    const isSelected = selectedFile === fullPath
+        const updatedMessages = [...messages, userMessage]
+        setMessages(updatedMessages)
+        setInput("")
+
+        await processMessage(userMessage.content, updatedMessages, session)
+    }
+
+    // Handle message retry
+    const handleRetryMessage = async (messageId: string) => {
+        const messageIndex = messages.findIndex((msg) => msg.id === messageId)
+        if (messageIndex === -1 || !session) return
+
+        const message = messages[messageIndex]
+        if (message.type !== "user") return
+
+        // Remove all messages after the selected message
+        const updatedMessages = messages.slice(0, messageIndex + 1)
+        setMessages(updatedMessages)
+
+        await processMessage(message.content, updatedMessages, session)
+    }
+
+    // Copy message content
+    const copyMessage = async (content: string) => {
+        try {
+            await navigator.clipboard.writeText(content)
+            toast({
+                title: "Copied",
+                description: "Message copied to clipboard",
+            })
+        } catch (error) {
+            toast({
+                title: "Error",
+                description: "Failed to copy message",
+                variant: "destructive",
+            })
+        }
+    }
+
+    // Copy file content
+    const copyFileContent = async (filePath: string) => {
+        const content = codeFiles[filePath]
+        if (!content) return
+
+        try {
+            await navigator.clipboard.writeText(content)
+            toast({
+                title: "Copied",
+                description: `${filePath} copied to clipboard`,
+            })
+        } catch (error) {
+            toast({
+                title: "Error",
+                description: "Failed to copy file content",
+                variant: "destructive",
+            })
+        }
+    }
+
+    // Download project files
+    const downloadProject = () => {
+        const zip = new JSZip()
+
+        Object.entries(codeFiles).forEach(([filePath, content]) => {
+            zip.file(filePath, content)
+        })
+
+        zip.generateAsync({ type: "blob" }).then((content) => {
+            const url = URL.createObjectURL(content)
+            const a = document.createElement("a")
+            a.href = url
+            a.download = `${session?.projectName || "project"}.zip`
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(url)
+        })
+    }
+
+    // Utility functions
+    const generateId = () => Math.random().toString(36).substr(2, 9)
+
+    const generateTitle = (prompt: string) => {
+        const words = prompt.split(" ").slice(0, 5)
+        return words.join(" ") + (words.length < prompt.split(" ").length ? "..." : "")
+    }
+
+    const getFileLanguage = (fileName: string): string => {
+        const ext = fileName.split(".").pop()?.toLowerCase()
+        const languageMap: Record<string, string> = {
+            tsx: "typescript",
+            ts: "typescript",
+            jsx: "javascript",
+            js: "javascript",
+            css: "css",
+            scss: "scss",
+            html: "html",
+            json: "json",
+            md: "markdown",
+            py: "python",
+            java: "java",
+            cpp: "cpp",
+            c: "c",
+        }
+        return languageMap[ext || ""] || "text"
+    }
+
+    const formatTimestamp = (date: Date): string => {
+        const now = new Date()
+        const diff = now.getTime() - date.getTime()
+        const minutes = Math.floor(diff / 60000)
+
+        if (minutes < 1) return "Just now"
+        if (minutes < 60) return `${minutes}m ago`
+        if (minutes < 1440) return `${Math.floor(minutes / 60)}h ago`
+        return date.toLocaleDateString()
+    }
+
+    // Resize handlers
+    const handleMouseDown = useCallback((panel: "chat" | "explorer") => {
+        setIsResizing(panel)
+        document.body.style.cursor = "col-resize"
+        document.body.style.userSelect = "none"
+    }, [])
+
+    const handleMouseMove = useCallback(
+        (e: MouseEvent) => {
+            if (!isResizing) return
+
+            if (isResizing === "chat") {
+                const newWidth = Math.max(280, Math.min(500, e.clientX))
+                setChatWidth(newWidth)
+            } else if (isResizing === "explorer") {
+                const newWidth = Math.max(200, Math.min(400, e.clientX - chatWidth))
+                setExplorerWidth(newWidth)
+            }
+        },
+        [isResizing, chatWidth],
+    )
+
+    const handleMouseUp = useCallback(() => {
+        setIsResizing(null)
+        document.body.style.cursor = ""
+        document.body.style.userSelect = ""
+    }, [])
+
+    // Effect for mouse events
+    useEffect(() => {
+        if (isResizing) {
+            document.addEventListener("mousemove", handleMouseMove)
+            document.addEventListener("mouseup", handleMouseUp)
+            return () => {
+                document.removeEventListener("mousemove", handleMouseMove)
+                document.removeEventListener("mouseup", handleMouseUp)
+            }
+        }
+    }, [isResizing, handleMouseMove, handleMouseUp])
+
+    // Responsive handling
+    useEffect(() => {
+        const handleResize = () => {
+            const mobile = window.innerWidth < 768
+            setIsMobile(mobile)
+            if (mobile) {
+                setIsChatCollapsed(true)
+                setIsExplorerCollapsed(true)
+            }
+        }
+
+        handleResize()
+        window.addEventListener("resize", handleResize)
+        return () => window.removeEventListener("resize", handleResize)
+    }, [])
+
+    // File tree operations
+    const toggleFolder = (folderPath: string) => {
+        const newExpanded = new Set(expandedFolders)
+        if (newExpanded.has(folderPath)) {
+            newExpanded.delete(folderPath)
+        } else {
+            newExpanded.add(folderPath)
+        }
+        setExpandedFolders(newExpanded)
+    }
+
+    const openFile = (filePath: string) => {
+        if (!openTabs.includes(filePath)) {
+            setOpenTabs([...openTabs, filePath])
+        }
+        setActiveTab(filePath)
+        setSelectedFile(filePath)
+    }
+
+    const closeTab = (filePath: string) => {
+        const newTabs = openTabs.filter((tab) => tab !== filePath)
+        setOpenTabs(newTabs)
+        if (activeTab === filePath && newTabs.length > 0) {
+            setActiveTab(newTabs[newTabs.length - 1])
+        } else if (newTabs.length === 0) {
+            setActiveTab(null)
+        }
+    }
+
+    const getFileIcon = (fileName: string, type: string) => {
+        if (type === "folder") return null
+
+        const ext = fileName.split(".").pop()?.toLowerCase()
+
+        if (ext === "tsx" || ext === "ts") {
+            return (
+                <div className="w-4 h-4 bg-blue-500 rounded-sm flex items-center justify-center text-white text-xs font-bold">
+                    TS
+                </div>
+            )
+        }
+        if (ext === "jsx" || ext === "js") {
+            return (
+                <div className="w-4 h-4 bg-yellow-500 rounded-sm flex items-center justify-center text-white text-xs font-bold">
+                    JS
+                </div>
+            )
+        }
+        if (ext === "css" || ext === "scss") {
+            return (
+                <div className="w-4 h-4 bg-purple-500 rounded-sm flex items-center justify-center text-white text-xs font-bold">
+                    CSS
+                </div>
+            )
+        }
+        if (ext === "json") {
+            return (
+                <div className="w-4 h-4 bg-green-500 rounded-sm flex items-center justify-center text-white text-xs font-bold">
+                    JSON
+                </div>
+            )
+        }
+        return <FileText className="w-4 h-4 text-gray-500" />
+    }
+
+    const renderFileTree = (node: FileNode, level = 0) => {
+        const isExpanded = expandedFolders.has(node.path)
+        const isSelected = selectedFile === node.path
+
+        return (
+            <div key={node.path}>
+                <div
+                    className={`flex items-center space-x-2 py-1 px-2 rounded cursor-pointer hover:bg-muted/50 ${isSelected && node.type === "file" ? "bg-muted" : ""
+                        }`}
+                    style={{ paddingLeft: `${level * 16 + 8}px` }}
+                    onClick={() => {
+                        if (node.type === "folder") {
+                            toggleFolder(node.path)
+                        } else {
+                            openFile(node.path)
+                        }
+                    }}
+                >
+                    {node.type === "folder" ? (
+                        <>
+                            {isExpanded ? (
+                                <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                            ) : (
+                                <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                            )}
+                            {isExpanded ? (
+                                <FolderOpen className="w-4 h-4 text-blue-500" />
+                            ) : (
+                                <Folder className="w-4 h-4 text-blue-500" />
+                            )}
+                        </>
+                    ) : (
+                        <>
+                            <div className="w-4" />
+                            {getFileIcon(node.name, node.type)}
+                        </>
+                    )}
+                    <span className={`text-sm truncate ${isSelected && node.type === "file" ? "font-medium" : ""}`}>
+                        {node.name}
+                    </span>
+                    {node.type === "file" && node.lastModified && (
+                        <span className="text-xs text-muted-foreground ml-auto">{formatTimestamp(node.lastModified)}</span>
+                    )}
+                </div>
+                {node.type === "folder" && isExpanded && node.children && (
+                    <div>{node.children.map((child) => renderFileTree(child, level + 1))}</div>
+                )}
+            </div>
+        )
+    }
+
+    // Loading state
+    if (isLoading) {
+        return (
+            <div className="min-h-screen bg-background flex items-center justify-center">
+                <div className="flex items-center space-x-2">
+                    <Loader2 className="w-6 h-6 animate-spin" />
+                    <span>Loading chat session...</span>
+                </div>
+            </div>
+        )
+    }
+
+    // Error state
+    if (error) {
+        return (
+            <div className="min-h-screen bg-background flex items-center justify-center">
+                <div className="text-center space-y-4">
+                    <AlertCircle className="w-12 h-12 text-destructive mx-auto" />
+                    <h2 className="text-xl font-semibold">Error Loading Chat</h2>
+                    <p className="text-muted-foreground">{error}</p>
+                    <Button onClick={() => router.push("/")}>Go Home</Button>
+                </div>
+            </div>
+        )
+    }
 
     return (
-      <div key={fullPath}>
-        <div
-          className={`flex items-center space-x-2 py-1 px-2 rounded cursor-pointer hover:bg-muted/50 ${
-            isSelected && node.type === "file" ? "bg-muted" : ""
-          }`}
-          style={{ paddingLeft: `${level * 16 + 8}px` }}
-          onClick={() => {
-            if (node.type === "folder") {
-              toggleFolder(fullPath)
-            } else {
-              openFile(fullPath)
-            }
-          }}
-        >
-          {node.type === "folder" ? (
-            <>
-              {isExpanded ? (
-                <ChevronDown className="w-4 h-4 text-muted-foreground" />
-              ) : (
-                <ChevronRight className="w-4 h-4 text-muted-foreground" />
-              )}
-              {isExpanded ? (
-                <FolderOpen className="w-4 h-4 text-blue-500" />
-              ) : (
-                <Folder className="w-4 h-4 text-blue-500" />
-              )}
-            </>
-          ) : (
-            <>
-              <div className="w-4" />
-              {getFileIcon(node.name, node.type)}
-            </>
-          )}
-          <span className={`text-sm truncate ${isSelected && node.type === "file" ? "font-medium" : ""}`}>
-            {node.name}
-          </span>
-        </div>
-        {node.type === "folder" && isExpanded && node.children && (
-          <div>{node.children.map((child) => renderFileTree(child, fullPath, level + 1))}</div>
-        )}
-      </div>
-    )
-  }
-
-  const handleSendMessage = () => {
-    if (!input.trim()) return
-
-    const newMessage = {
-      id: messages.length + 1,
-      type: "user" as const,
-      content: input,
-      timestamp: "Just now",
-    }
-
-    setMessages([...messages, newMessage])
-    setInput("")
-    setIsGenerating(true)
-
-    // Simulate AI response
-    setTimeout(() => {
-      const aiResponse = {
-        id: messages.length + 2,
-        type: "assistant" as const,
-        content: "I'll help you with that modification. Let me update the code for you.",
-        timestamp: "Just now",
-        hasCode: true,
-      }
-      setMessages((prev) => [...prev, aiResponse])
-      setIsGenerating(false)
-    }, 2000)
-  }
-
-  return (
-    <div className="min-h-screen bg-background">
-      <div className="flex h-screen overflow-hidden">
-        {/* Mobile Menu Button */}
-        {isMobile && (
-          <div className="fixed top-4 left-4 z-50 md:hidden">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setIsChatCollapsed(!isChatCollapsed)}
-              className="bg-background"
-            >
-              <Menu className="w-4 h-4" />
-            </Button>
-          </div>
-        )}
-
-        {/* Chat Sidebar */}
-        {(!isMobile || !isChatCollapsed) && (
-          <div
-            className={`${isMobile ? "fixed inset-y-0 left-0 z-40 bg-background" : "relative"} border-r border-border flex flex-col bg-card transition-all duration-200`}
-            style={{ width: isMobile ? "100vw" : `${chatWidth}px` }}
-          >
-            {/* Chat Header */}
-            <div className="border-b border-border p-4">
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex-1">
-                  <h1 className="text-lg font-semibold text-foreground mb-1">E-commerce Product Page</h1>
-                  <div className="flex items-center space-x-2 text-sm text-muted-foreground">
-                    <Badge variant="secondary" className="text-xs px-2 py-1">
-                      <Sparkles className="w-3 h-3 mr-1" />
-                      v0-1.5-md
-                    </Badge>
-                    <span>•</span>
-                    <span>Updated 1h ago</span>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-1">
-                  {isMobile && (
-                    <Button variant="ghost" size="sm" onClick={() => setIsChatCollapsed(true)}>
-                      <X className="w-4 h-4" />
-                    </Button>
-                  )}
-                  {!isMobile && (
-                    <Button variant="ghost" size="sm" onClick={() => setIsChatCollapsed(!isChatCollapsed)}>
-                      <PanelLeftClose className="w-4 h-4" />
-                    </Button>
-                  )}
-                  <Button variant="ghost" size="sm">
-                    <MoreHorizontal className="w-4 h-4" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            {/* Messages */}
-            <ScrollArea className="flex-1 px-4">
-              <div className="space-y-4 py-4">
-                {messages.map((message) => (
-                  <div key={message.id} className="space-y-2">
-                    <div className="flex items-center space-x-2">
-                      {message.type === "assistant" && (
-                        <Avatar className="w-5 h-5">
-                          <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-white text-xs font-medium">
-                            v0
-                          </AvatarFallback>
-                        </Avatar>
-                      )}
-                      <span className="text-xs font-medium text-foreground">
-                        {message.type === "user" ? "You" : "v0"}
-                      </span>
-                      <span className="text-xs text-muted-foreground">{message.timestamp}</span>
+        <div className="min-h-screen bg-background">
+            <div className="flex h-screen overflow-hidden">
+                {/* Mobile Menu Button */}
+                {isMobile && (
+                    <div className="fixed top-4 left-4 z-50 md:hidden">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setIsChatCollapsed(!isChatCollapsed)}
+                            className="bg-background"
+                        >
+                            <Menu className="w-4 h-4" />
+                        </Button>
                     </div>
-                    <div className={`${message.type === "assistant" ? "ml-7" : ""}`}>
-                      <div className="prose prose-sm max-w-none text-foreground">
-                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
-                      </div>
-                      {message.type === "assistant" && (
-                        <div className="flex items-center space-x-2 mt-2">
-                          <Button variant="ghost" size="sm" className="h-6 text-xs">
-                            <Copy className="w-3 h-3 mr-1" />
-                            Copy
-                          </Button>
-                          <Button variant="ghost" size="sm" className="h-6 text-xs">
-                            <RotateCcw className="w-3 h-3 mr-1" />
-                            Retry
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {isGenerating && (
-                  <div className="space-y-2">
-                    <div className="flex items-center space-x-2">
-                      <Avatar className="w-5 h-5">
-                        <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-white text-xs font-medium">
-                          v0
-                        </AvatarFallback>
-                      </Avatar>
-                      <span className="text-xs font-medium text-foreground">v0</span>
-                      <span className="text-xs text-muted-foreground">Just now</span>
-                    </div>
-                    <div className="ml-7">
-                      <div className="flex items-center space-x-2">
-                        <div className="flex space-x-1">
-                          <div className="w-1.5 h-1.5 bg-foreground rounded-full animate-bounce"></div>
-                          <div
-                            className="w-1.5 h-1.5 bg-foreground rounded-full animate-bounce"
-                            style={{ animationDelay: "0.1s" }}
-                          ></div>
-                          <div
-                            className="w-1.5 h-1.5 bg-foreground rounded-full animate-bounce"
-                            style={{ animationDelay: "0.2s" }}
-                          ></div>
-                        </div>
-                        <span className="text-xs text-muted-foreground">Generating...</span>
-                      </div>
-                    </div>
-                  </div>
                 )}
-              </div>
-            </ScrollArea>
 
-            {/* Input Area */}
-            <div className="border-t border-border p-4">
-              <div className="relative">
-                <Textarea
-                  placeholder="Describe what you want to build or modify..."
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  className="min-h-[60px] pr-12 resize-none text-sm"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault()
-                      handleSendMessage()
-                    }
-                  }}
-                />
-                <div className="absolute bottom-2 right-2 flex items-center space-x-1">
-                  <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
-                    <Paperclip className="w-3 h-3" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="h-6 w-6 p-0 bg-foreground text-background hover:bg-foreground/90"
-                    onClick={handleSendMessage}
-                    disabled={!input.trim() || isGenerating}
-                  >
-                    <ArrowUp className="w-3 h-3" />
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            {/* Resize Handle */}
-            {!isMobile && !isChatCollapsed && (
-              <div
-                ref={chatResizeRef}
-                className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-500/20 transition-colors group"
-                onMouseDown={() => handleMouseDown("chat")}
-              >
-                <div className="absolute top-1/2 right-0 transform -translate-y-1/2 translate-x-1/2">
-                  <GripVertical className="w-3 h-3 text-muted-foreground group-hover:text-blue-500" />
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Collapsed Chat Button */}
-        {!isMobile && isChatCollapsed && (
-          <div className="w-12 border-r border-border bg-card flex flex-col items-center py-4">
-            <Button variant="ghost" size="sm" onClick={() => setIsChatCollapsed(false)}>
-              <Menu className="w-4 h-4" />
-            </Button>
-          </div>
-        )}
-
-        {/* File Explorer */}
-        {(!isMobile || !isExplorerCollapsed) && (
-          <div
-            className={`${isMobile ? "fixed inset-y-0 right-0 z-30 bg-background" : "relative"} border-r border-border bg-card flex flex-col transition-all duration-200`}
-            style={{ width: isMobile ? "80vw" : `${explorerWidth}px` }}
-          >
-            {/* Explorer Header */}
-            <div className="border-b border-border p-3">
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-semibold text-foreground">EXPLORER</h3>
-                <div className="flex items-center space-x-1">
-                  {isMobile && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 w-6 p-0"
-                      onClick={() => setIsExplorerCollapsed(true)}
+                {/* Chat Sidebar */}
+                {(!isMobile || !isChatCollapsed) && (
+                    <div
+                        className={`${isMobile ? "fixed inset-y-0 left-0 z-40 bg-background" : "relative"} border-r border-border flex flex-col bg-card transition-all duration-200`}
+                        style={{ width: isMobile ? "100vw" : `${chatWidth}px` }}
                     >
-                      <X className="w-3 h-3" />
-                    </Button>
-                  )}
-                  {!isMobile && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 w-6 p-0"
-                      onClick={() => setIsExplorerCollapsed(!isExplorerCollapsed)}
-                    >
-                      <PanelRightClose className="w-3 h-3" />
-                    </Button>
-                  )}
-                  <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
-                    <Plus className="w-3 h-3" />
-                  </Button>
-                  <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
-                    <RefreshCw className="w-3 h-3" />
-                  </Button>
-                </div>
-              </div>
-              <div className="relative">
-                <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 text-muted-foreground w-3 h-3" />
-                <input
-                  type="text"
-                  placeholder="Search files..."
-                  className="w-full pl-7 pr-2 py-1 text-xs bg-muted rounded border-0 focus:outline-none focus:ring-1 focus:ring-ring"
-                />
-              </div>
-            </div>
-
-            {/* File Tree */}
-            <ScrollArea className="flex-1">
-              <div className="p-2">{renderFileTree(projectFiles)}</div>
-            </ScrollArea>
-
-            {/* Resize Handle */}
-            {!isMobile && !isExplorerCollapsed && (
-              <div
-                ref={explorerResizeRef}
-                className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-500/20 transition-colors group"
-                onMouseDown={() => handleMouseDown("explorer")}
-              >
-                <div className="absolute top-1/2 right-0 transform -translate-y-1/2 translate-x-1/2">
-                  <GripVertical className="w-3 h-3 text-muted-foreground group-hover:text-blue-500" />
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Collapsed Explorer Button */}
-        {!isMobile && isExplorerCollapsed && (
-          <div className="w-12 border-r border-border bg-card flex flex-col items-center py-4">
-            <Button variant="ghost" size="sm" onClick={() => setIsExplorerCollapsed(false)}>
-              <Folder className="w-4 h-4" />
-            </Button>
-          </div>
-        )}
-
-        {/* Main Content Area */}
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Top Bar */}
-          <div className="border-b border-border flex-shrink-0">
-            {/* Tabs */}
-            <div className="flex items-center min-h-[40px]">
-              <div className="flex-1 flex items-center overflow-x-auto">
-                {openTabs.map((tab) => (
-                  <div
-                    key={tab}
-                    className={`flex items-center space-x-2 px-3 py-2 border-r border-border cursor-pointer text-sm min-w-0 ${
-                      activeTab === tab ? "bg-background" : "bg-muted/50 hover:bg-muted"
-                    }`}
-                    onClick={() => setActiveTab(tab)}
-                  >
-                    <div className="flex-shrink-0">{getFileIcon(tab.split("/").pop() || "", "file")}</div>
-                    <span className="truncate max-w-32">{tab.split("/").pop()}</span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-4 w-4 p-0 hover:bg-muted-foreground/20 flex-shrink-0"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        closeTab(tab)
-                      }}
-                    >
-                      <X className="w-3 h-3" />
-                    </Button>
-                  </div>
-                ))}
-              </div>
-
-              {/* View Mode Toggle */}
-              <div className="flex items-center border-l border-border flex-shrink-0">
-                <Button
-                  variant={viewMode === "preview" ? "default" : "ghost"}
-                  size="sm"
-                  className="rounded-none h-10"
-                  onClick={() => setViewMode("preview")}
-                >
-                  <Eye className="w-4 h-4 mr-1" />
-                  <span className="hidden sm:inline">Preview</span>
-                </Button>
-                <Button
-                  variant={viewMode === "code" ? "default" : "ghost"}
-                  size="sm"
-                  className="rounded-none h-10"
-                  onClick={() => setViewMode("code")}
-                >
-                  <Code className="w-4 h-4 mr-1" />
-                  <span className="hidden sm:inline">Code</span>
-                </Button>
-              </div>
-            </div>
-
-            {/* Toolbar */}
-            {viewMode === "preview" && (
-              <div className="flex items-center justify-between px-4 py-2 bg-muted/30 flex-wrap gap-2">
-                <div className="flex items-center space-x-4">
-                  <Badge
-                    variant="secondary"
-                    className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100 px-2 py-1"
-                  >
-                    <Zap className="w-3 h-3 mr-1" />
-                    Live Preview
-                  </Badge>
-                  <div className="flex items-center space-x-1 bg-background rounded-md p-1">
-                    <Button
-                      variant={selectedDevice === "mobile" ? "default" : "ghost"}
-                      size="sm"
-                      className="h-6 px-2"
-                      onClick={() => setSelectedDevice("mobile")}
-                    >
-                      <Smartphone className="w-3 h-3" />
-                    </Button>
-                    <Button
-                      variant={selectedDevice === "tablet" ? "default" : "ghost"}
-                      size="sm"
-                      className="h-6 px-2"
-                      onClick={() => setSelectedDevice("tablet")}
-                    >
-                      <Tablet className="w-3 h-3" />
-                    </Button>
-                    <Button
-                      variant={selectedDevice === "desktop" ? "default" : "ghost"}
-                      size="sm"
-                      className="h-6 px-2"
-                      onClick={() => setSelectedDevice("desktop")}
-                    >
-                      <Monitor className="w-3 h-3" />
-                    </Button>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <Button variant="ghost" size="sm">
-                    <ExternalLink className="w-4 h-4" />
-                  </Button>
-                  <Button variant="outline" size="sm">
-                    <Download className="w-4 h-4 mr-2" />
-                    <span className="hidden sm:inline">Export</span>
-                  </Button>
-                  <Button size="sm" className="bg-foreground text-background hover:bg-foreground/90">
-                    <Share className="w-4 h-4 mr-2" />
-                    <span className="hidden sm:inline">Share</span>
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Content Area - Fixed Height */}
-          <div className="flex-1 overflow-hidden">
-            {viewMode === "preview" ? (
-              /* Preview Mode */
-              <div className="h-full bg-gray-50 dark:bg-gray-900 p-4 sm:p-8 overflow-auto">
-                <div
-                  className={`mx-auto bg-white dark:bg-gray-800 rounded-xl shadow-2xl overflow-hidden transition-all duration-300 ${
-                    selectedDevice === "mobile" ? "max-w-sm" : selectedDevice === "tablet" ? "max-w-3xl" : "max-w-7xl"
-                  }`}
-                >
-                  {/* Mock E-commerce Product Page */}
-                  <div className="p-4 sm:p-8">
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12">
-                      {/* Product Gallery */}
-                      <div className="space-y-4">
-                        <div className="aspect-square bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-800 rounded-xl flex items-center justify-center relative overflow-hidden">
-                          <div className="absolute inset-0 bg-gradient-to-br from-blue-50 to-purple-50 dark:from-blue-900/20 dark:to-purple-900/20"></div>
-                          <ImageIcon className="w-16 sm:w-20 h-16 sm:h-20 text-gray-400 relative z-10" />
-                          <div className="absolute top-4 right-4 bg-red-500 text-white px-2 py-1 rounded-full text-xs font-bold">
-                            25% OFF
-                          </div>
+                        {/* Chat Header */}
+                        <div className="border-b border-border p-4">
+                            <div className="flex items-start justify-between mb-3">
+                                <div className="flex-1">
+                                    <h1 className="text-lg font-semibold text-foreground mb-1">{session?.title || "New Chat"}</h1>
+                                    <div className="flex items-center space-x-2 text-sm text-muted-foreground">
+                                        <Badge variant="secondary" className="text-xs px-2 py-1">
+                                            <Sparkles className="w-3 h-3 mr-1" />
+                                            AI Assistant
+                                        </Badge>
+                                        {session?.projectType && (
+                                            <>
+                                                <span>•</span>
+                                                <span>{session.projectType}</span>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="flex items-center space-x-1">
+                                    {projectFiles && (
+                                        <Button variant="ghost" size="sm" onClick={downloadProject}>
+                                            <Download className="w-4 h-4" />
+                                        </Button>
+                                    )}
+                                    {isMobile && (
+                                        <Button variant="ghost" size="sm" onClick={() => setIsChatCollapsed(true)}>
+                                            <X className="w-4 h-4" />
+                                        </Button>
+                                    )}
+                                    {!isMobile && (
+                                        <Button variant="ghost" size="sm" onClick={() => setIsChatCollapsed(!isChatCollapsed)}>
+                                            <PanelLeftClose className="w-4 h-4" />
+                                        </Button>
+                                    )}
+                                </div>
+                            </div>
                         </div>
-                        <div className="grid grid-cols-4 gap-2 sm:gap-3">
-                          {[1, 2, 3, 4].map((i) => (
+
+                        {/* Messages */}
+                        <ScrollArea className="flex-1 px-4">
+                            <div className="space-y-4 py-4">
+                                {messages.map((message) => (
+                                    <div key={message.id} className="space-y-2">
+                                        <div className="flex items-center space-x-2">
+                                            {message.type === "assistant" && (
+                                                <Avatar className="w-5 h-5">
+                                                    <AvatarFallback
+                                                        className={`text-white text-xs font-medium ${message.isError ? "bg-destructive" : "bg-gradient-to-br from-purple-500 to-pink-500"
+                                                            }`}
+                                                    >
+                                                        {message.isError ? "!" : "AI"}
+                                                    </AvatarFallback>
+                                                </Avatar>
+                                            )}
+                                            <span className="text-xs font-medium text-foreground">
+                                                {message.type === "user" ? "You" : "AI"}
+                                            </span>
+                                            <span className="text-xs text-muted-foreground">{formatTimestamp(message.timestamp)}</span>
+                                            {message.metadata?.filesGenerated && (
+                                                <Badge variant="outline" className="text-xs">
+                                                    {message.metadata.filesGenerated.length} files
+                                                </Badge>
+                                            )}
+                                        </div>
+                                        <div className={`${message.type === "assistant" ? "ml-7" : ""}`}>
+                                            <div className="prose prose-sm max-w-none text-foreground">
+                                                <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
+                                            </div>
+                                            {message.type === "assistant" && (
+                                                <div className="flex items-center space-x-2 mt-2">
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        className="h-6 text-xs"
+                                                        onClick={() => copyMessage(message.content)}
+                                                    >
+                                                        <Copy className="w-3 h-3 mr-1" />
+                                                        Copy
+                                                    </Button>
+                                                    {message.type === "assistant" && !message.isError && (
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            className="h-6 text-xs"
+                                                            onClick={() => handleRetryMessage(message.id)}
+                                                        >
+                                                            <RotateCcw className="w-3 h-3 mr-1" />
+                                                            Retry
+                                                        </Button>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                                {isGenerating && (
+                                    <div className="space-y-2">
+                                        <div className="flex items-center space-x-2">
+                                            <Avatar className="w-5 h-5">
+                                                <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-white text-xs font-medium">
+                                                    AI
+                                                </AvatarFallback>
+                                            </Avatar>
+                                            <span className="text-xs font-medium text-foreground">AI</span>
+                                            <span className="text-xs text-muted-foreground">Just now</span>
+                                        </div>
+                                        <div className="ml-7">
+                                            <div className="flex items-center space-x-2">
+                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                <span className="text-xs text-muted-foreground">Generating response...</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                                <div ref={messagesEndRef} />
+                            </div>
+                        </ScrollArea>
+
+                        {/* Input Area */}
+                        <div className="border-t border-border p-4">
+                            <div className="relative">
+                                <Textarea
+                                    placeholder="Describe what you want to build or modify..."
+                                    value={input}
+                                    onChange={(e) => setInput(e.target.value)}
+                                    className="min-h-[60px] pr-12 resize-none text-sm"
+                                    disabled={isGenerating}
+                                    onKeyDown={(e) => {
+                                        if (e.key === "Enter" && !e.shiftKey) {
+                                            e.preventDefault()
+                                            handleSendMessage()
+                                        }
+                                    }}
+                                />
+                                <div className="absolute bottom-2 right-2 flex items-center space-x-1">
+                                    <Button variant="ghost" size="sm" className="h-6 w-6 p-0">
+                                        <Paperclip className="w-3 h-3" />
+                                    </Button>
+                                    <Button
+                                        size="sm"
+                                        className="h-6 w-6 p-0 bg-foreground text-background hover:bg-foreground/90"
+                                        onClick={handleSendMessage}
+                                        disabled={!input.trim() || isGenerating}
+                                    >
+                                        {isGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowUp className="w-3 h-3" />}
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Resize Handle */}
+                        {!isMobile && !isChatCollapsed && (
                             <div
-                              key={i}
-                              className={`aspect-square bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-800 rounded-lg border-2 transition-colors cursor-pointer ${
-                                i === 1 ? "border-blue-500" : "border-transparent hover:border-gray-300"
-                              }`}
-                            ></div>
-                          ))}
-                        </div>
-                      </div>
-
-                      {/* Product Details */}
-                      <div className="space-y-6">
-                        <div>
-                          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-3">
-                            Premium Wireless Headphones
-                          </h1>
-                          <div className="flex items-center space-x-3 mb-4">
-                            <div className="flex text-yellow-400">
-                              {[1, 2, 3, 4, 5].map((star) => (
-                                <span key={star} className="text-lg">
-                                  ★
-                                </span>
-                              ))}
+                                className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-500/20 transition-colors group"
+                                onMouseDown={() => handleMouseDown("chat")}
+                            >
+                                <div className="absolute top-1/2 right-0 transform -translate-y-1/2 translate-x-1/2">
+                                    <GripVertical className="w-3 h-3 text-muted-foreground group-hover:text-blue-500" />
+                                </div>
                             </div>
-                            <span className="text-sm text-gray-600 dark:text-gray-400 font-medium">(128 reviews)</span>
-                          </div>
-                          <div className="flex items-center space-x-4 mb-6 flex-wrap">
-                            <span className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-white">
-                              $299.99
-                            </span>
-                            <span className="text-xl text-gray-500 line-through">$399.99</span>
-                            <Badge className="bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100 px-3 py-1">
-                              Save $100
-                            </Badge>
-                          </div>
-                        </div>
-
-                        <div className="space-y-6">
-                          <div>
-                            <h3 className="font-semibold text-gray-900 dark:text-white mb-3">Color</h3>
-                            <div className="flex space-x-3">
-                              {[
-                                { color: "bg-black", name: "Midnight Black" },
-                                { color: "bg-white border-2 border-gray-200", name: "Pearl White" },
-                                { color: "bg-blue-500", name: "Ocean Blue" },
-                                { color: "bg-red-500", name: "Crimson Red" },
-                              ].map((option, i) => (
-                                <div
-                                  key={i}
-                                  className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full ${option.color} cursor-pointer ring-2 ring-offset-2 transition-all ${
-                                    i === 0 ? "ring-gray-400" : "ring-transparent hover:ring-gray-300"
-                                  }`}
-                                  title={option.name}
-                                ></div>
-                              ))}
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4 pt-4">
-                            <Button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 text-lg font-semibold">
-                              Add to Cart
-                            </Button>
-                            <Button variant="outline" className="px-6 py-3">
-                              ♡
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
+                        )}
                     </div>
-                  </div>
+                )}
+
+                {/* File Explorer */}
+                {projectFiles && (!isMobile || !isExplorerCollapsed) && (
+                    <div
+                        className={`${isMobile ? "fixed inset-y-0 right-0 z-30 bg-background" : "relative"} border-r border-border bg-card flex flex-col transition-all duration-200`}
+                        style={{ width: isMobile ? "80vw" : `${explorerWidth}px` }}
+                    >
+                        {/* Explorer Header */}
+                        <div className="border-b border-border p-3">
+                            <div className="flex items-center justify-between mb-2">
+                                <h3 className="text-sm font-semibold text-foreground">EXPLORER</h3>
+                                <div className="flex items-center space-x-1">
+                                    {isMobile && (
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-6 w-6 p-0"
+                                            onClick={() => setIsExplorerCollapsed(true)}
+                                        >
+                                            <X className="w-3 h-3" />
+                                        </Button>
+                                    )}
+                                </div>
+                            </div>
+                            <div className="text-xs text-muted-foreground">{Object.keys(codeFiles).length} files</div>
+                        </div>
+
+                        {/* File Tree */}
+                        <ScrollArea className="flex-1">
+                            <div className="p-2">{renderFileTree(projectFiles)}</div>
+                        </ScrollArea>
+
+                        {/* Resize Handle */}
+                        {!isMobile && !isExplorerCollapsed && (
+                            <div
+                                className="absolute top-0 right-0 w-1 h-full cursor-col-resize bg-transparent hover:bg-blue-500/20 transition-colors group"
+                                onMouseDown={() => handleMouseDown("explorer")}
+                            >
+                                <div className="absolute top-1/2 right-0 transform -translate-y-1/2 translate-x-1/2">
+                                    <GripVertical className="w-3 h-3 text-muted-foreground group-hover:text-blue-500" />
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Main Content Area */}
+                <div className="flex-1 flex flex-col min-w-0">
+                    {/* Top Bar */}
+                    {openTabs.length > 0 && (
+                        <div className="border-b border-border flex-shrink-0">
+                            {/* Tabs */}
+                            <div className="flex items-center min-h-[40px]">
+                                <div className="flex-1 flex items-center overflow-x-auto">
+                                    {openTabs.map((tab) => (
+                                        <div
+                                            key={tab}
+                                            className={`flex items-center space-x-2 px-3 py-2 border-r border-border cursor-pointer text-sm min-w-0 ${activeTab === tab ? "bg-background" : "bg-muted/50 hover:bg-muted"
+                                                }`}
+                                            onClick={() => setActiveTab(tab)}
+                                        >
+                                            <div className="flex-shrink-0">{getFileIcon(tab.split("/").pop() || "", "file")}</div>
+                                            <span className="truncate max-w-32">{tab.split("/").pop()}</span>
+                                            <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-4 w-4 p-0 hover:bg-muted-foreground/20 flex-shrink-0"
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    closeTab(tab)
+                                                }}
+                                            >
+                                                <X className="w-3 h-3" />
+                                            </Button>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* View Mode Toggle */}
+                                <div className="flex items-center border-l border-border flex-shrink-0">
+                                    <Button
+                                        variant={viewMode === "preview" ? "default" : "ghost"}
+                                        size="sm"
+                                        className="rounded-none h-10"
+                                        onClick={() => setViewMode("preview")}
+                                    >
+                                        <Eye className="w-4 h-4 mr-1" />
+                                        <span className="hidden sm:inline">Preview</span>
+                                    </Button>
+                                    <Button
+                                        variant={viewMode === "code" ? "default" : "ghost"}
+                                        size="sm"
+                                        className="rounded-none h-10"
+                                        onClick={() => setViewMode("code")}
+                                    >
+                                        <Code className="w-4 h-4 mr-1" />
+                                        <span className="hidden sm:inline">Code</span>
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Content Area */}
+                    <div className="flex-1 overflow-hidden">
+                        {!activeTab ? (
+                            /* Welcome State */
+                            <div className="h-full flex items-center justify-center bg-muted/20">
+                                <div className="text-center space-y-4">
+                                    <div className="w-16 h-16 bg-muted rounded-full flex items-center justify-center mx-auto">
+                                        <Code className="w-8 h-8 text-muted-foreground" />
+                                    </div>
+                                    <h3 className="text-lg font-semibold">No File Selected</h3>
+                                    <p className="text-muted-foreground max-w-md">
+                                        {projectFiles
+                                            ? "Select a file from the explorer to view its contents"
+                                            : "Start a conversation to generate your first project files"}
+                                    </p>
+                                </div>
+                            </div>
+                        ) : viewMode === "preview" ? (
+                            /* Preview Mode */
+                            <PreviewSection weBuildString={rowArtifact || ""} />
+                        ) : (
+                            /* Code Mode */
+                            <div className="h-full bg-gray-900 text-gray-100 flex flex-col">
+                                <div className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700 flex-shrink-0">
+                                    <span className="text-sm font-medium truncate">{activeTab}</span>
+                                    <div className="flex items-center space-x-2">
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className="text-gray-400 hover:text-white"
+                                            onClick={() => copyFileContent(activeTab)}
+                                        >
+                                            <Copy className="w-4 h-4" />
+                                        </Button>
+                                    </div>
+                                </div>
+                                <ScrollArea className="flex-1">
+                                    <pre className="p-4 text-sm leading-relaxed">
+                                        <code>{codeFiles[activeTab] || "// Loading file content..."}</code>
+                                    </pre>
+                                </ScrollArea>
+                            </div>
+                        )}
+                    </div>
                 </div>
-              </div>
-            ) : (
-              /* Code Mode - Fixed Height */
-              <div className="h-full bg-gray-900 text-gray-100 flex flex-col">
-                <div className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700 flex-shrink-0">
-                  <span className="text-sm font-medium truncate">{activeTab}</span>
-                  <div className="flex items-center space-x-2">
-                    <Button variant="ghost" size="sm" className="text-gray-400 hover:text-white">
-                      <Copy className="w-4 h-4" />
-                    </Button>
-                    <Button variant="ghost" size="sm" className="text-gray-400 hover:text-white">
-                      <Download className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </div>
-                <ScrollArea className="flex-1">
-                  <pre className="p-4 text-sm leading-relaxed">
-                    <code>{codeFiles[activeTab] || "// File content not available"}</code>
-                  </pre>
-                </ScrollArea>
-              </div>
-            )}
-          </div>
+            </div>
         </div>
-      </div>
-    </div>
-  )
+    )
 }
