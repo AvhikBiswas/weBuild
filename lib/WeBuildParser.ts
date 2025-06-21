@@ -1,49 +1,49 @@
 // Enums for better type safety
 export enum WeBuildActionType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  TERMINAL = 'terminal'
+  CREATE = "create",
+  UPDATE = "update",
+  DELETE = "delete",
+  TERMINAL = "terminal",
 }
 
 // Interfaces for structure parsing
 export interface WeBuildFileStructure {
-  readonly fileName: string;
-  readonly action: WeBuildActionType;
-  readonly hasContent: boolean;
-  readonly contentSize: number;
+  readonly fileName: string
+  readonly action: WeBuildActionType
+  readonly hasContent: boolean
+  readonly contentSize: number
 }
 
 export interface WeBuildCommandStructure {
-  readonly command: string;
-  readonly action: WeBuildActionType;
+  readonly command: string
+  readonly action: WeBuildActionType
 }
 
 export interface WeBuildStructureResult {
-  readonly files: readonly WeBuildFileStructure[];
-  readonly commands: readonly WeBuildCommandStructure[];
-  readonly totalBlocks: number;
-  readonly fileTree: readonly string[];
+  readonly files: readonly WeBuildFileStructure[]
+  readonly commands: readonly WeBuildCommandStructure[]
+  readonly totalBlocks: number
+  readonly fileTree: readonly string[]
 }
 
 export interface DirectoryStructure {
-  readonly [key: string]: DirectoryStructure | string;
+  readonly [key: string]: DirectoryStructure | string
 }
 
 // Error types
 export class WeBuildStructureError extends Error {
   constructor(
     message: string,
-    public readonly blockIndex?: number
+    public readonly blockIndex?: number,
   ) {
-    super(message);
-    this.name = 'WeBuildStructureError';
+    super(message)
+    this.name = "WeBuildStructureError"
   }
 }
 
 // Main structure parser class (Singleton)
 export class WeBuildStructureParser {
-  private static instance: WeBuildStructureParser | null = null;
+  private static instance: WeBuildStructureParser | null = null
 
   // Private constructor prevents direct instantiation
   private constructor() {}
@@ -53,342 +53,219 @@ export class WeBuildStructureParser {
    */
   public static getInstance(): WeBuildStructureParser {
     if (!WeBuildStructureParser.instance) {
-      WeBuildStructureParser.instance = new WeBuildStructureParser();
+      WeBuildStructureParser.instance = new WeBuildStructureParser()
     }
-    return WeBuildStructureParser.instance;
+    return WeBuildStructureParser.instance
   }
 
   /**
    * Reset the singleton instance (useful for testing)
    */
   public static resetInstance(): void {
-    WeBuildStructureParser.instance = null;
+    WeBuildStructureParser.instance = null
   }
 
   /**
    * Parse weBuild format string and extract only structure information
    */
   public parseStructure(weBuildString: string): WeBuildStructureResult {
-    if (!weBuildString || typeof weBuildString !== 'string') {
-      throw new WeBuildStructureError('Invalid weBuild string provided');
+    if (!weBuildString || typeof weBuildString !== "string") {
+      throw new WeBuildStructureError("Invalid weBuild string provided")
     }
 
-    const files: WeBuildFileStructure[] = [];
-    const commands: WeBuildCommandStructure[] = [];
+    const files: WeBuildFileStructure[] = []
+    const commands: WeBuildCommandStructure[] = []
 
     // Regular expression to match weBuild blocks
-    const weBuildRegex = /<weBuild\s+([^>]+)>([\s\S]*?)<\/weBuild>/g;
-    
-    let match: RegExpExecArray | null;
-    let blockIndex = 0;
+    const weBuildRegex = /<weBuild\s+([^>]+)>([\s\S]*?)<\/weBuild>/g
+
+    let match: RegExpExecArray | null
+    let blockIndex = 0
 
     while ((match = weBuildRegex.exec(weBuildString)) !== null) {
       try {
-        const attributes = match[1];
-        const content = match[2].trim();
-        
-        const action = this.extractAttribute(attributes, 'action');
-        
+        const attributes = match[1]
+        const content = match[2].trim()
+
+        const action = this.extractAttribute(attributes, "action")
+
         if (!action || !Object.values(WeBuildActionType).includes(action as WeBuildActionType)) {
-          throw new WeBuildStructureError(`Invalid action: ${action}`, blockIndex);
+          throw new WeBuildStructureError(`Invalid action: ${action}`, blockIndex)
         }
 
-        const actionType = action as WeBuildActionType;
+        const actionType = action as WeBuildActionType
 
         if (actionType === WeBuildActionType.CREATE || actionType === WeBuildActionType.UPDATE) {
-          const fileName = this.extractAttribute(attributes, 'fileName');
+          const fileName = this.extractAttribute(attributes, "fileName")
           if (!fileName) {
-            throw new WeBuildStructureError('fileName is required for create/update actions', blockIndex);
+            throw new WeBuildStructureError("fileName is required for create/update actions", blockIndex)
           }
 
           files.push({
             fileName,
             action: actionType,
             hasContent: content.length > 0,
-            contentSize: content.length
-          });
+            contentSize: content.length,
+          })
         } else if (actionType === WeBuildActionType.TERMINAL) {
-          const command = this.extractAttribute(attributes, 'command');
+          const command = this.extractAttribute(attributes, "command")
           if (!command) {
-            throw new WeBuildStructureError('command is required for terminal actions', blockIndex);
+            throw new WeBuildStructureError("command is required for terminal actions", blockIndex)
           }
 
-          commands.push({ 
+          commands.push({
             command: command.trim(),
-            action: actionType
-          });
+            action: actionType,
+          })
         }
 
-        blockIndex++;
+        blockIndex++
       } catch (error) {
         if (error instanceof WeBuildStructureError) {
-          throw error;
+          throw error
         }
-        throw new WeBuildStructureError(`Error parsing block ${blockIndex}: ${error}`, blockIndex);
+        throw new WeBuildStructureError(`Error parsing block ${blockIndex}: ${error}`, blockIndex)
       }
     }
 
-    const fileTree = this.buildFileTree(files.map(f => f.fileName));
+    const fileTree = this.buildFileTree(files.map((f) => f.fileName))
 
     return {
       files: Object.freeze(files),
       commands: Object.freeze(commands),
       totalBlocks: blockIndex,
-      fileTree: Object.freeze(fileTree)
-    };
+      fileTree: Object.freeze(fileTree),
+    }
   }
 
   /**
    * Generate structural weBuild format with filenames only (no content)
    */
   public generateStructureFormat(weBuildString: string): string {
-    const { files, commands } = this.parseStructure(weBuildString);
-    
-    let result = '';
+    const { files, commands } = this.parseStructure(weBuildString)
+
+    let result = ""
 
     // Add file structures
-    files.forEach(file => {
-      result += `<weBuild action="${file.action}" fileName="${file.fileName}">\n`;
-      result += `// Content skipped (${file.contentSize} characters)\n`;
-      result += `</weBuild>\n\n`;
-    });
+    files.forEach((file) => {
+      result += `<weBuild action="${file.action}" fileName="${file.fileName}">\n`
+      result += `// Content skipped (${file.contentSize} characters)\n`
+      result += `</weBuild>\n\n`
+    })
 
     // Add command structures
-    commands.forEach(cmd => {
-      result += `<weBuild action="${cmd.action}" command="${cmd.command}">\n`;
-      result += `</weBuild>\n\n`;
-    });
+    commands.forEach((cmd) => {
+      result += `<weBuild action="${cmd.action}" command="${cmd.command}">\n`
+      result += `</weBuild>\n\n`
+    })
 
-    return result.trim();
+    return result.trim()
   }
 
   /**
    * Get only filenames as an array
    */
   public getFileNames(weBuildString: string): readonly string[] {
-    const { files } = this.parseStructure(weBuildString);
-    return Object.freeze(files.map(f => f.fileName));
+    const { files } = this.parseStructure(weBuildString)
+    return Object.freeze(files.map((f) => f.fileName))
   }
 
   /**
    * Get only commands as an array
    */
   public getCommands(weBuildString: string): readonly string[] {
-    const { commands } = this.parseStructure(weBuildString);
-    return Object.freeze(commands.map(c => c.command));
+    const { commands } = this.parseStructure(weBuildString)
+    return Object.freeze(commands.map((c) => c.command))
   }
 
   /**
    * Get hierarchical directory structure
    */
   public getDirectoryStructure(weBuildString: string): DirectoryStructure {
-    const fileNames = this.getFileNames(weBuildString);
-    return this.buildDirectoryStructure(fileNames);
+    const fileNames = this.getFileNames(weBuildString)
+    return this.buildDirectoryStructure(fileNames)
   }
 
   /**
    * Get flat file tree representation
    */
   public getFileTree(weBuildString: string): readonly string[] {
-    const fileNames = this.getFileNames(weBuildString);
-    return this.buildFileTree(fileNames);
-  }
-
-  /**
-   * Get statistics about the structure
-   */
-  public getStructureStats(weBuildString: string): {
-    readonly totalFiles: number;
-    readonly totalCommands: number;
-    readonly totalBlocks: number;
-    readonly filesByExtension: Readonly<Record<string, number>>;
-    readonly actionsByType: Readonly<Record<WeBuildActionType, number>>;
-    readonly directories: readonly string[];
-    readonly maxDepth: number;
-  } {
-    const { files, commands, totalBlocks } = this.parseStructure(weBuildString);
-    
-    const filesByExtension: Record<string, number> = {};
-    const actionsByType: Record<WeBuildActionType, number> = {
-        [WeBuildActionType.CREATE]: 0,
-        [WeBuildActionType.UPDATE]: 0,
-        [WeBuildActionType.DELETE]: 0,
-        [WeBuildActionType.TERMINAL]: 0
-    };
-    const directories = new Set<string>();
-    let maxDepth = 0;
-
-    files.forEach(file => {
-      // Count by extension
-      const extension = file.fileName.substring(file.fileName.lastIndexOf('.')) || 'no-extension';
-      filesByExtension[extension] = (filesByExtension[extension] || 0) + 1;
-      
-      // Count by action type
-      actionsByType[file.action] = (actionsByType[file.action] || 0) + 1;
-      
-      // Extract directories and calculate depth
-      const parts = file.fileName.split('/');
-      maxDepth = Math.max(maxDepth, parts.length);
-      
-      for (let i = 1; i < parts.length; i++) {
-        directories.add(parts.slice(0, i).join('/'));
-      }
-    });
-
-    commands.forEach(cmd => {
-      actionsByType[cmd.action] = (actionsByType[cmd.action] || 0) + 1;
-    });
-
-    return {
-      totalFiles: files.length,
-      totalCommands: commands.length,
-      totalBlocks,
-      filesByExtension: Object.freeze(filesByExtension),
-      actionsByType: Object.freeze(actionsByType),
-      directories: Object.freeze(Array.from(directories).sort()),
-      maxDepth
-    };
-  }
-
-  /**
-   * Pretty print the file structure
-   */
-  public printStructure(weBuildString: string): string {
-    const { files, commands } = this.parseStructure(weBuildString);
-    let output = '';
-
-    if (files.length > 0) {
-      output += '📁 Files Structure:\n';
-      output += '─'.repeat(50) + '\n';
-      
-      const fileTree = this.buildFileTree(files.map(f => f.fileName));
-      fileTree.forEach(item => {
-        output += item + '\n';
-      });
-      output += '\n';
-    }
-
-    if (commands.length > 0) {
-      output += '⚡ Commands:\n';
-      output += '─'.repeat(50) + '\n';
-      commands.forEach((cmd, index) => {
-        output += `${index + 1}. ${cmd.command}\n`;
-      });
-    }
-
-    return output;
+    const fileNames = this.getFileNames(weBuildString)
+    return this.buildFileTree(fileNames)
   }
 
   /**
    * Extract attribute value from weBuild tag attributes
    */
   private extractAttribute(attributes: string, attributeName: string): string | null {
-    const regex = new RegExp(`${attributeName}=["']([^"']+)["']`);
-    const match = attributes.match(regex);
-    return match ? match[1] : null;
+    const regex = new RegExp(`${attributeName}=["']([^"']+)["']`)
+    const match = attributes.match(regex)
+    return match ? match[1] : null
   }
 
   /**
    * Build hierarchical directory structure
    */
   private buildDirectoryStructure(fileNames: readonly string[]): DirectoryStructure {
-    const structure: DirectoryStructure = {};
+    const structure: DirectoryStructure = {}
 
-    fileNames.forEach(fileName => {
-      const parts = fileName.split('/');
-      let current: any = structure;
+    fileNames.forEach((fileName) => {
+      const parts = fileName.split("/")
+      let current: any = structure
 
       for (let i = 0; i < parts.length - 1; i++) {
-        const part = parts[i];
+        const part = parts[i]
         if (!current[part]) {
-          current[part] = {};
+          current[part] = {}
         }
-        current = current[part];
+        current = current[part]
       }
 
-      const filename = parts[parts.length - 1];
-      current[filename] = 'file';
-    });
+      const filename = parts[parts.length - 1]
+      current[filename] = "file"
+    })
 
-    return structure;
+    return structure
   }
 
   /**
    * Build flat file tree with indentation
    */
   private buildFileTree(fileNames: readonly string[]): string[] {
-    const tree: string[] = [];
-    const directories = new Set<string>();
+    const tree: string[] = []
+    const directories = new Set<string>()
 
     // First, collect all directories
-    fileNames.forEach(fileName => {
-      const parts = fileName.split('/');
+    fileNames.forEach((fileName) => {
+      const parts = fileName.split("/")
       for (let i = 1; i < parts.length; i++) {
-        directories.add(parts.slice(0, i).join('/'));
+        directories.add(parts.slice(0, i).join("/"))
       }
-    });
+    })
 
     // Sort directories and files
     const allItems = [
-      ...Array.from(directories).map(dir => ({ type: 'dir', path: dir })),
-      ...fileNames.map(file => ({ type: 'file', path: file }))
-    ].sort((a, b) => a.path.localeCompare(b.path));
+      ...Array.from(directories).map((dir) => ({ type: "dir", path: dir })),
+      ...fileNames.map((file) => ({ type: "file", path: file })),
+    ].sort((a, b) => a.path.localeCompare(b.path))
 
     // Build tree with proper indentation
-    allItems.forEach(item => {
-      const depth = item.path.split('/').length - 1;
-      const indent = '  '.repeat(depth);
-      const name = item.path.split('/').pop() || item.path;
-      const icon = item.type === 'dir' ? '📁' : '📄';
-      
-      tree.push(`${indent}${icon} ${name}`);
-    });
+    allItems.forEach((item) => {
+      const depth = item.path.split("/").length - 1
+      const indent = "  ".repeat(depth)
+      const name = item.path.split("/").pop() || item.path
+      const icon = item.type === "dir" ? "📁" : "📄"
 
-    return tree;
+      tree.push(`${indent}${icon} ${name}`)
+    })
+
+    return tree
   }
 }
 
 // Factory function for getting singleton instance
 export function getWeBuildStructureParser(): WeBuildStructureParser {
-  return WeBuildStructureParser.getInstance();
+  return WeBuildStructureParser.getInstance()
 }
 
-export default WeBuildStructureParser;
-
-/*
-// Example usage
-async function structureParserExample() {
-  console.log('=== WeBuild Structure Parser Example ===');
-  
-  const parser = getWeBuildStructureParser();
-  
-  const sampleWeBuildCode = `
-{
-  "artifacts": {
-    "app/components/Header.tsx": "<weBuild action=\"create\" fileName=\"app/components/Header.tsx\">\nimport React from 'react';\nexport default function Header() {\n  return <header>My App</header>;\n}\n</weBuild>",
-    "app/layout.tsx": "<weBuild action=\"create\" fileName=\"app/layout.tsx\">\nimport React from 'react';\nexport default function Layout() {\n  return (\n    <html>\n      <head>\n        <title>My App</title>\n      </head>\n      <body>\n        <Header />\n      </body>\n    </html>\n  );\n}\n</weBuild>"
-  },
-  "headingMessage": "Todo application created",
-  "description": "Created basic todo application with header and layout",
-  "error": null
-}
-  `;
-  
-  // Get structure only (no content)
-  const structure = parser.parseStructure(sampleWeBuildCode);
-  console.log('Files found:', structure.files.map(f => f.fileName));
-  console.log('Commands found:', structure.commands.map(c => c.command));
-  
-  // Generate structure format (filenames only)
-  const structureFormat = parser.generateStructureFormat(sampleWeBuildCode);
-  console.log('\n📋 Structure Format:\n', structureFormat);
-  
-  // Pretty print structure
-  const prettyStructure = parser.printStructure(sampleWeBuildCode);
-  console.log('\n🌳 Pretty Structure:\n', prettyStructure);
-  
-  // Get statistics
-  const stats = parser.getStructureStats(sampleWeBuildCode);
-  console.log('📊 Statistics:', stats);
-}
-*/
+export default WeBuildStructureParser

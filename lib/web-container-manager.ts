@@ -344,6 +344,181 @@ export default App
   }
 
   /**
+   * Safely handle process output to prevent infinite loops
+   */
+  private handleProcessOutput(process: any, commandName: string): void {
+    const reader = process.output.getReader()
+    let isReading = false
+    let outputBuffer = ''
+    let lastLogTime = 0
+    const LOG_THROTTLE_MS = 1000 // Only log progress every second
+
+    const readOutput = async () => {
+      if (isReading) return
+      isReading = true
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          
+          // Convert Uint8Array to string if needed
+          const output = typeof value === 'string' ? value : new TextDecoder().decode(value)
+          
+          // Add to buffer
+          outputBuffer += output
+          
+          // Process complete lines
+          const lines = outputBuffer.split('\n')
+          outputBuffer = lines.pop() || '' // Keep incomplete line in buffer
+          
+          for (const line of lines) {
+            const cleanedLine = this.cleanANSIOutput(line)
+            if (cleanedLine && cleanedLine.length > 0) {
+              console.log(`${commandName}: ${cleanedLine}`)
+            }
+          }
+          
+          // Handle progress indicators (throttled logging)
+          if (outputBuffer.length > 0) {
+            const currentTime = Date.now()
+            if (currentTime - lastLogTime > LOG_THROTTLE_MS) {
+              const cleanedBuffer = this.cleanANSIOutput(outputBuffer)
+              if (cleanedBuffer && !this.isProgressIndicator(cleanedBuffer)) {
+                console.log(`${commandName}: ${cleanedBuffer}`)
+                lastLogTime = currentTime
+              }
+            }
+          }
+        }
+        
+        // Log any remaining buffer content
+        if (outputBuffer.length > 0) {
+          const cleanedBuffer = this.cleanANSIOutput(outputBuffer)
+          if (cleanedBuffer && !this.isProgressIndicator(cleanedBuffer)) {
+            console.log(`${commandName}: ${cleanedBuffer}`)
+          }
+        }
+        
+      } catch (error) {
+        console.warn(`Error reading ${commandName} output:`, error)
+      } finally {
+        isReading = false
+        reader.releaseLock()
+      }
+    }
+
+    readOutput()
+  }
+
+  /**
+   * Clean ANSI escape sequences from output
+   */
+  private cleanANSIOutput(text: string): string {
+    // Remove ANSI escape sequences
+    const ansiRegex = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g
+    return text.replace(ansiRegex, '').trim()
+  }
+
+  /**
+   * Handle server output with URL detection
+   */
+  private handleServerOutput(process: any): void {
+    const reader = process.output.getReader()
+    let isReading = false
+    let outputBuffer = ''
+
+    const readOutput = async () => {
+      if (isReading) return
+      isReading = true
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          
+          const output = typeof value === 'string' ? value : new TextDecoder().decode(value)
+          outputBuffer += output
+          
+          // Process complete lines
+          const lines = outputBuffer.split('\n')
+          outputBuffer = lines.pop() || ''
+          
+          for (const line of lines) {
+            const cleanedLine = this.cleanANSIOutput(line)
+            if (cleanedLine && cleanedLine.length > 0) {
+              console.log(`Dev server: ${cleanedLine}`)
+              
+              // Check for server ready indicators
+              if (this.detectServerReady(cleanedLine)) {
+                if (!this.serverUrl) {
+                  const url = this.extractServerUrl(cleanedLine) || 'http://localhost:3000'
+                  this.serverUrl = url
+                  this.isServerStarting = false
+                  this.serverReadyCallbacks.forEach(callback => callback(url))
+                }
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('Error reading dev server output:', error)
+      } finally {
+        isReading = false
+        reader.releaseLock()
+      }
+    }
+
+    readOutput()
+  }
+
+  /**
+   * Detect if server is ready from output
+   */
+  private detectServerReady(line: string): boolean {
+    const readyIndicators = [
+      'ready',
+      'local:',
+      'localhost:',
+      'dev server running',
+      'server started',
+      'listening on'
+    ]
+    
+    const lowerLine = line.toLowerCase()
+    return readyIndicators.some(indicator => lowerLine.includes(indicator))
+  }
+
+  /**
+   * Extract server URL from output line
+   */
+  private extractServerUrl(line: string): string | null {
+    const urlRegex = /https?:\/\/[^\s]+/i
+    const match = line.match(urlRegex)
+    return match ? match[0] : null
+  }
+
+  /**
+   * Check if text is just a progress indicator
+   */
+  private isProgressIndicator(text: string): boolean {
+    const progressChars = ['|', '/', '-', '\\', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+    const trimmed = text.trim()
+    
+    // Check if it's just progress characters
+    if (trimmed.length === 1 && progressChars.includes(trimmed)) {
+      return true
+    }
+    
+    // Check if it's empty or just control characters
+    if (trimmed.length === 0 || /^[\x00-\x1F\x7F]*$/.test(trimmed)) {
+      return true
+    }
+    
+    return false
+  }
+
+  /**
    * Update files in WebContainer based on weBuild string
    */
   public async updateFiles(weBuildString: string): Promise<void> {
@@ -375,21 +550,20 @@ export default App
         }
       }
 
-      // Handle terminal commands
+      // Handle terminal commands with better output handling
       for (const cmd of structure.commands) {
         console.log(`Executing command: ${cmd.command}`)
         try {
           const process = await container.spawn('sh', ['-c', cmd.command])
           
-          process.output.pipeTo(new WritableStream({
-            write(data) {
-              console.log(`Command output: ${data}`)
-            }
-          }))
+          // Use the safer output handling method
+          this.handleProcessOutput(process, `Command: ${cmd.command}`)
 
           const exitCode = await process.exit
           if (exitCode !== 0) {
             console.warn(`Command "${cmd.command}" exited with code ${exitCode}`)
+          } else {
+            console.log(`Command "${cmd.command}" completed successfully`)
           }
         } catch (error) {
           console.warn(`Failed to execute command "${cmd.command}":`, error)
@@ -430,11 +604,8 @@ export default App
         env: { NODE_ENV: 'development' }
       })
       
-      installProcess.output.pipeTo(new WritableStream({
-        write(data) {
-          console.log(`npm install: ${data}`)
-        }
-      }))
+      // Use safer output handling for install process
+      this.handleProcessOutput(installProcess, 'npm install')
       
       const installExitCode = await installProcess.exit
       
@@ -456,21 +627,8 @@ export default App
         this.serverReadyCallbacks.forEach(callback => callback(url))
       })
 
-      // Log server output
-      this.serverProcess.output.pipeTo(new WritableStream({
-        write(data) {
-          console.log(`Dev server: ${data}`)
-          // Check for common server ready messages
-          if (data.includes('ready') || data.includes('Local:') || data.includes('localhost:3000')) {
-            if (!this.serverUrl) {
-              const url = 'http://localhost:3000'
-              this.serverUrl = url
-              this.isServerStarting = false
-              this.serverReadyCallbacks.forEach(callback => callback(url))
-            }
-          }
-        }
-      }))
+      // Use safer output handling for dev server with server detection
+      this.handleServerOutput(this.serverProcess)
 
       // Handle server process exit
       this.serverProcess.exit.then((exitCode: number) => {
